@@ -19,6 +19,7 @@ import { baseEmbed, nowPlayingEmbed, queueEmbed, viewEmbed } from './embeds.js';
 import { controllerButtons, helpMenu } from './components.js';
 import { Paginator, replyEditor, responseChannel } from './Paginator.js';
 import { MessageEditor } from './MessageEditor.js';
+import { KaraokeView } from './KaraokeView.js';
 
 interface Controller {
   guildId: string;
@@ -34,6 +35,7 @@ export class CommandPresenter implements CommandUI {
   private router!: InteractionRouter;
   private paginator!: Paginator;
   private editor!: MessageEditor;
+  private karaoke!: KaraokeView;
   private readonly controllers = new Set<Controller>();
   private readonly announcementLocks = new Map<string, AsyncLock>();
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -45,6 +47,10 @@ export class CommandPresenter implements CommandUI {
     this.router = router;
     this.paginator = new Paginator(router);
     this.editor = new MessageEditor(services.env.CONTROLLER_UPDATE_INTERVAL_MS, services.logger);
+    this.karaoke = new KaraokeView(services, async (message) => {
+      if (this.closing || !message.guildId) return;
+      this.scheduleDelete(message, await services.repositories.guildSettings.get(message.guildId));
+    });
     this.timer = setInterval(() => {
       for (const guildId of services.players.guildIds()) this.refresh(guildId);
     }, services.env.CONTROLLER_UPDATE_INTERVAL_MS);
@@ -187,10 +193,11 @@ export class CommandPresenter implements CommandUI {
     context: CommandContext,
     view: Extract<CommandView, { kind: 'lyrics' }>,
   ): Promise<void> {
-    const playbackId = context.snapshot?.currentPlaybackId;
-    const lines = view.lyrics.lines.length
-      ? view.lyrics.lines.map((line) => `[${formatTime(line.timestampMs)}] ${line.text}`)
-      : view.lyrics.text.split(/\r?\n/);
+    if (view.lyrics.lines.length) {
+      await this.karaoke.open(context, view.track, view.lyrics);
+      return;
+    }
+    const lines = view.lyrics.text.split(/\r?\n/);
     const pages: string[] = [];
     let chunk = '';
     for (const line of lines) {
@@ -211,24 +218,15 @@ export class CommandPresenter implements CommandUI {
       1,
       (fresh, requested) => {
         const page = Math.max(1, Math.min(pages.length, requested));
-        const position = fresh.snapshot?.positionMs ?? 0;
-        const current = view.lyrics.lines.filter((line) => line.timestampMs <= position).at(-1);
-        const description = `${pages[page - 1] ?? '—'}${current ? `\n▶ ${cleanText(current.text, 500)}` : ''}`;
         const embed = baseEmbed(fresh.settings)
           .setTitle(`${t(fresh.settings.language, 'lyrics')} · ${cleanText(view.track.title, 170)}`)
-          .setDescription(description)
+          .setDescription(pages[page - 1] ?? '—')
           .setAuthor({
             name: `${view.lyrics.provider} · ${t(fresh.settings.language, 'page', { page, pages: pages.length })}`,
           });
         return Promise.resolve({ payload: { embeds: [embed] }, page, pages: pages.length });
       },
       { musicChannel: true },
-      view.lyrics.lines.length
-        ? {
-            intervalMs: this.services.env.CONTROLLER_UPDATE_INTERVAL_MS,
-            active: () => context.snapshot?.currentPlaybackId === playbackId,
-          }
-        : undefined,
     );
   }
   async announce(snapshot: QueueSnapshot): Promise<void> {
@@ -363,6 +361,7 @@ export class CommandPresenter implements CommandUI {
   }
   refresh(guildId: string): void {
     if (this.closing) return;
+    this.karaoke.refresh(guildId);
     for (const record of this.controllers) {
       if (!record.active || record.guildId !== guildId || !record.message) continue;
       this.editor.request(record.message.id, async () => {
@@ -378,14 +377,15 @@ export class CommandPresenter implements CommandUI {
     }
   }
   async end(guildId: string, playbackId?: string | null): Promise<void> {
-    await Promise.all(
-      [...this.controllers]
+    await Promise.all([
+      this.karaoke.end(guildId, playbackId),
+      ...[...this.controllers]
         .filter(
           (record) =>
             record.guildId === guildId && (!playbackId || record.playbackId === playbackId),
         )
         .map((record) => this.finish(record)),
-    );
+    ]);
   }
   private async finish(record: Controller): Promise<void> {
     if (!record.active) return;
@@ -431,6 +431,7 @@ export class CommandPresenter implements CommandUI {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     await this.paginator.close();
+    await this.karaoke.close();
     await Promise.all([...this.controllers].map((record) => this.finish(record)));
     await this.editor.close();
     this.announcementLocks.clear();

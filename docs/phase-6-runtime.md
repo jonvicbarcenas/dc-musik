@@ -209,9 +209,19 @@ retaining the originating server for authorization. Ephemeral menus edit through
 their interaction webhook. Closed DMs still produce the existing friendly error.
 
 Help uses a category select and rechecks administrator visibility when changed.
-Lyrics use bounded pages. Timed lyrics show timestamped lines and update the current
-line at the controller interval while their two-minute menu is active; a track
-change removes their controls. Plain lyrics use the same pagination without a timer.
+`/lyrics` and `!lyrics` open a karaoke view when timestamped lyrics are available.
+The rolling window shows the previous line, a bold current line and the next two
+lines. It follows the engine's playback clock, including pauses, seeking and speed
+filters, for the whole track rather than expiring after two minutes. Local polling
+runs every 500 ms, and changed frames are serialized at least 1.5 seconds apart;
+Discord's REST client still handles server rate limits. Unchanged frames cause no
+HTTP edits, and slow requests discard intermediate frames. Intro/instrumental gaps
+are explicit, provider formatting is escaped, and simultaneous timestamps are
+combined. A track change, stop, inaccessible message or shutdown ends the view.
+Repeated public requests in one channel replace the older view, with at most three
+active views per server. Public views have a 24-hour cap; private slash replies stop
+before their 15-minute webhook token expires. Clean mode retains active views and
+cleans them after playback ends. Plain lyrics retain bounded, two-minute pagination.
 UI labels ship in English and Filipino/Tagalog. Command-authored notices remain
 English; the dictionaries and typed translation helper provide the extension point.
 
@@ -318,9 +328,17 @@ Local checks cover controller actions, stale playback races, expired/actor-bound
 menus, DM pagination, help permission changes, embed bounds, timed lyrics, health
 HTTP, serialized edits, event draining, natural completion, kicks, account selection,
 shard session ownership, concurrent restoration, cancelled startup, and readiness.
-All **216 local checks** pass: 50 engine checks, 92 command checks, and 74 runtime/UI/
+All **230 local checks** pass: 50 engine checks, 92 command checks, and 88 runtime/UI/
 authorization checks including safe startup diagnostics. Temporary checks are under ignored
 `data/phase-6-verification`; Phase 7 promotes them into the permanent test suite.
+
+Fourteen karaoke regressions cover playback beyond two minutes, pause/resume,
+forward/backward seeking, edit throttling, slow-edit coalescing, terminal edit
+draining, deleted messages, replacement views, intro/instrumental sections,
+timestamp sorting/grouping, embed bounds, stale lyric fetches, clean mode, private
+slash webhook expiry and shutdown. These checks use fixture lyrics and Discord
+message doubles; a live provider and audible Discord playback still need trying
+with `/lyrics` in the deployed bot.
 
 An actual local Lavalink 4.2.2 with all four configured plugins passed initial event
 readiness, session initialization, authenticated WAV loading, a real process restart,

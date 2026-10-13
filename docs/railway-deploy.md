@@ -111,6 +111,11 @@ Once bot deployment reports healthy, join a Discord voice channel and try:
 !np
 ```
 
+For synchronized lyrics, run `/lyrics` or `!lyrics` while a song is playing. When
+the provider supplies timestamps, the karaoke view follows the full song, highlights
+the current line and shows nearby lines. Pause and seeking update the same message;
+songs with only plain lyrics use pages. No additional Railway variables are needed.
+
 Then test a short complete audio attachment to verify the private media bridge.
 Restart the bot service once and confirm a saved favorite/playlist remains available.
 A fresh Railway volume begins with an empty database; local saved libraries are

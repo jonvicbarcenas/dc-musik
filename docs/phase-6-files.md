@@ -1,6 +1,6 @@
 # Phase 6 — Complete source files
 
-All 67 added or updated production files are reproduced in full, including the runtime guide. Temporary verification fixtures under ignored data/ remain reserved for the permanent test phase.
+All 69 added or updated production files are reproduced in full, including the runtime guide. Temporary verification fixtures under ignored data/ remain reserved for the permanent test phase.
 
 ## C:/Users/USER/OneDrive/Documents/ChatGPT/discord-music-stream/src/index.ts
 
@@ -1023,6 +1023,7 @@ import { baseEmbed, nowPlayingEmbed, queueEmbed, viewEmbed } from './embeds.js';
 import { controllerButtons, helpMenu } from './components.js';
 import { Paginator, replyEditor, responseChannel } from './Paginator.js';
 import { MessageEditor } from './MessageEditor.js';
+import { KaraokeView } from './KaraokeView.js';
 
 interface Controller {
   guildId: string;
@@ -1038,6 +1039,7 @@ export class CommandPresenter implements CommandUI {
   private router!: InteractionRouter;
   private paginator!: Paginator;
   private editor!: MessageEditor;
+  private karaoke!: KaraokeView;
   private readonly controllers = new Set<Controller>();
   private readonly announcementLocks = new Map<string, AsyncLock>();
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -1049,6 +1051,10 @@ export class CommandPresenter implements CommandUI {
     this.router = router;
     this.paginator = new Paginator(router);
     this.editor = new MessageEditor(services.env.CONTROLLER_UPDATE_INTERVAL_MS, services.logger);
+    this.karaoke = new KaraokeView(services, async (message) => {
+      if (this.closing || !message.guildId) return;
+      this.scheduleDelete(message, await services.repositories.guildSettings.get(message.guildId));
+    });
     this.timer = setInterval(() => {
       for (const guildId of services.players.guildIds()) this.refresh(guildId);
     }, services.env.CONTROLLER_UPDATE_INTERVAL_MS);
@@ -1191,10 +1197,11 @@ export class CommandPresenter implements CommandUI {
     context: CommandContext,
     view: Extract<CommandView, { kind: 'lyrics' }>,
   ): Promise<void> {
-    const playbackId = context.snapshot?.currentPlaybackId;
-    const lines = view.lyrics.lines.length
-      ? view.lyrics.lines.map((line) => `[${formatTime(line.timestampMs)}] ${line.text}`)
-      : view.lyrics.text.split(/\r?\n/);
+    if (view.lyrics.lines.length) {
+      await this.karaoke.open(context, view.track, view.lyrics);
+      return;
+    }
+    const lines = view.lyrics.text.split(/\r?\n/);
     const pages: string[] = [];
     let chunk = '';
     for (const line of lines) {
@@ -1215,24 +1222,15 @@ export class CommandPresenter implements CommandUI {
       1,
       (fresh, requested) => {
         const page = Math.max(1, Math.min(pages.length, requested));
-        const position = fresh.snapshot?.positionMs ?? 0;
-        const current = view.lyrics.lines.filter((line) => line.timestampMs <= position).at(-1);
-        const description = `${pages[page - 1] ?? '—'}${current ? `\n▶ ${cleanText(current.text, 500)}` : ''}`;
         const embed = baseEmbed(fresh.settings)
           .setTitle(`${t(fresh.settings.language, 'lyrics')} · ${cleanText(view.track.title, 170)}`)
-          .setDescription(description)
+          .setDescription(pages[page - 1] ?? '—')
           .setAuthor({
             name: `${view.lyrics.provider} · ${t(fresh.settings.language, 'page', { page, pages: pages.length })}`,
           });
         return Promise.resolve({ payload: { embeds: [embed] }, page, pages: pages.length });
       },
       { musicChannel: true },
-      view.lyrics.lines.length
-        ? {
-            intervalMs: this.services.env.CONTROLLER_UPDATE_INTERVAL_MS,
-            active: () => context.snapshot?.currentPlaybackId === playbackId,
-          }
-        : undefined,
     );
   }
   async announce(snapshot: QueueSnapshot): Promise<void> {
@@ -1367,6 +1365,7 @@ export class CommandPresenter implements CommandUI {
   }
   refresh(guildId: string): void {
     if (this.closing) return;
+    this.karaoke.refresh(guildId);
     for (const record of this.controllers) {
       if (!record.active || record.guildId !== guildId || !record.message) continue;
       this.editor.request(record.message.id, async () => {
@@ -1382,14 +1381,15 @@ export class CommandPresenter implements CommandUI {
     }
   }
   async end(guildId: string, playbackId?: string | null): Promise<void> {
-    await Promise.all(
-      [...this.controllers]
+    await Promise.all([
+      this.karaoke.end(guildId, playbackId),
+      ...[...this.controllers]
         .filter(
           (record) =>
             record.guildId === guildId && (!playbackId || record.playbackId === playbackId),
         )
         .map((record) => this.finish(record)),
-    );
+    ]);
   }
   private async finish(record: Controller): Promise<void> {
     if (!record.active) return;
@@ -1435,6 +1435,7 @@ export class CommandPresenter implements CommandUI {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     await this.paginator.close();
+    await this.karaoke.close();
     await Promise.all([...this.controllers].map((record) => this.finish(record)));
     await this.editor.close();
     this.announcementLocks.clear();
@@ -1749,6 +1750,242 @@ export function viewEmbed(
         { name: 'Shards', value: view.shards.join(', ') || '0', inline: true },
       );
   }
+}
+````
+
+## C:/Users/USER/OneDrive/Documents/ChatGPT/discord-music-stream/src/lib/ui/KaraokeView.ts
+
+````typescript
+import { escapeMarkdown, MessageFlags } from 'discord.js';
+import type { Message } from 'discord.js';
+import type { CommandContext, CommandReply } from '../../framework/CommandContext.js';
+import type { CommandServices } from '../../framework/CommandServices.js';
+import { CommandError } from '../../framework/errors.js';
+import type { GuildSettings, QueueSnapshot, StoredTrack } from '../db/models.js';
+import type { Lyrics } from '../music/LyricsService.js';
+import { cleanText, safeWebUrl } from '../utils/text.js';
+import { translate as t } from '../utils/i18n.js';
+import { formatTime } from '../utils/time.js';
+import { baseEmbed } from './embeds.js';
+import { replyEditor } from './Paginator.js';
+
+const POLL_MS = 500;
+const EDIT_INTERVAL_MS = 1500;
+const MAX_LIFETIME_MS = 86_400_000;
+
+interface KaraokeSession {
+  guildId: string;
+  playbackId: string;
+  track: StoredTrack;
+  lyrics: Lyrics;
+  settings: GuildSettings;
+  message: Message;
+  edit: (payload: CommandReply) => Promise<void>;
+  lastKey: string;
+  lastSentAt: number;
+  expiresAt: number;
+  active: boolean;
+  running: Promise<void> | null;
+  stopping: Promise<void> | null;
+}
+type EndReason = 'ended' | 'stopped';
+
+/** Poll locally; serialize edits and send only changed lyric/status frames. */
+export class KaraokeView {
+  private readonly sessions = new Set<KaraokeSession>();
+  private readonly finishing = new Set<Promise<void>>();
+  private timer: ReturnType<typeof setInterval> | null = null;
+  private closing = false;
+
+  constructor(
+    private readonly services: CommandServices,
+    private readonly onFinish: (message: Message) => Promise<void>,
+  ) {}
+
+  async open(context: CommandContext, track: StoredTrack, lyrics: Lyrics): Promise<void> {
+    const snapshot = this.services.players.view(context.guildId);
+    if (this.closing || !snapshot?.currentPlaybackId || snapshot.current?.track.key !== track.key)
+      throw new CommandError('ARGUMENT', 'The track changed. Run lyrics again.');
+    const ordered = [...lyrics.lines].sort((a, b) => a.timestampMs - b.timestampMs);
+    const lines: Lyrics['lines'] = [];
+    for (const line of ordered) {
+      const previous = lines.at(-1);
+      if (previous?.timestampMs === line.timestampMs)
+        previous.text = `${previous.text} / ${line.text}`.slice(0, 1000);
+      else lines.push({ ...line });
+    }
+    const normalized = { ...lyrics, lines };
+    const initial = frame(track, normalized, snapshot, context.settings);
+    context.keepResponse = true;
+    const message = await context.respond(initial.payload);
+    const session: KaraokeSession = {
+      guildId: context.guildId,
+      playbackId: snapshot.currentPlaybackId,
+      track,
+      lyrics: normalized,
+      settings: context.settings,
+      message,
+      edit: replyEditor(context, message),
+      lastKey: initial.key,
+      lastSentAt: Date.now(),
+      expiresAt: message.flags.has(MessageFlags.Ephemeral)
+        ? Math.min(Date.now() + MAX_LIFETIME_MS, context.createdTimestamp + 840_000)
+        : Date.now() + MAX_LIFETIME_MS,
+      active: true,
+      running: null,
+      stopping: null,
+    };
+    this.sessions.add(session);
+    if (
+      this.closing ||
+      this.services.players.view(session.guildId)?.currentPlaybackId !== session.playbackId
+    ) {
+      await this.finish(session, this.closing ? 'stopped' : 'ended');
+      return;
+    }
+    // A repeated request in the same public channel replaces its previous view.
+    const older = [...this.sessions].filter(
+      (item) =>
+        item !== session &&
+        item.guildId === session.guildId &&
+        item.message.channelId === message.channelId &&
+        !item.message.flags.has(MessageFlags.Ephemeral) &&
+        !message.flags.has(MessageFlags.Ephemeral),
+    );
+    for (const item of older) await this.finish(item, 'stopped');
+    const guildSessions = [...this.sessions].filter((item) => item.guildId === session.guildId);
+    while (guildSessions.length > 3) {
+      const oldest = guildSessions.shift();
+      if (oldest) await this.finish(oldest, 'stopped');
+    }
+    if (!this.timer && !this.closing) {
+      this.timer = setInterval(() => this.refresh(), POLL_MS);
+      this.timer.unref();
+    }
+  }
+
+  refresh(guildId?: string): void {
+    if (this.closing) return;
+    for (const session of this.sessions) {
+      if (!session.active || (guildId && session.guildId !== guildId)) continue;
+      const snapshot = this.services.players.view(session.guildId);
+      if (snapshot?.currentPlaybackId !== session.playbackId || !snapshot.current) {
+        void this.finish(session, 'ended');
+        continue;
+      }
+      if (Date.now() >= session.expiresAt) {
+        void this.finish(session, 'stopped');
+        continue;
+      }
+      if (session.running || Date.now() - session.lastSentAt < EDIT_INTERVAL_MS) continue;
+      const next = frame(session.track, session.lyrics, snapshot, session.settings);
+      if (next.key === session.lastKey) continue;
+      session.running = session
+        .edit(next.payload)
+        .then(() => {
+          session.lastKey = next.key;
+          session.lastSentAt = Date.now();
+        })
+        .catch(() => {
+          this.services.logger.warn({ messageId: session.message.id }, 'Lyrics view unavailable.');
+          void this.finish(session, 'stopped', false);
+        })
+        .finally(() => {
+          session.running = null;
+        });
+    }
+  }
+
+  async end(guildId: string, playbackId?: string | null): Promise<void> {
+    await Promise.all(
+      [...this.sessions]
+        .filter(
+          (item) => item.guildId === guildId && (!playbackId || item.playbackId === playbackId),
+        )
+        .map((item) => this.finish(item, 'ended')),
+    );
+  }
+
+  private finish(session: KaraokeSession, reason: EndReason, edit = true): Promise<void> {
+    if (session.stopping) return session.stopping;
+    session.active = false;
+    this.sessions.delete(session);
+    if (!this.sessions.size && this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+    const done = (async () => {
+      await session.running;
+      if (edit) {
+        const snapshot = this.services.players.view(session.guildId);
+        await session
+          .edit(frame(session.track, session.lyrics, snapshot, session.settings, reason).payload)
+          .catch(() => undefined);
+      }
+      await this.onFinish(session.message).catch(() => undefined);
+    })();
+    session.stopping = done;
+    this.finishing.add(done);
+    void done.finally(() => this.finishing.delete(done));
+    return done;
+  }
+
+  async close(): Promise<void> {
+    this.closing = true;
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+    await Promise.all([...this.sessions].map((item) => this.finish(item, 'stopped')));
+    await Promise.allSettled([...this.finishing]);
+  }
+}
+
+function frame(
+  track: StoredTrack,
+  lyrics: Lyrics,
+  snapshot: QueueSnapshot | null,
+  settings: GuildSettings,
+  ended?: EndReason,
+): { key: string; payload: CommandReply } {
+  const language = settings.language;
+  const position = snapshot?.positionMs ?? 0;
+  // Binary search permits backward seeking and avoids scanning an entire lyric on each poll.
+  let low = 0;
+  let high = lyrics.lines.length;
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if ((lyrics.lines[mid]?.timestampMs ?? Infinity) <= position) low = mid + 1;
+    else high = mid;
+  }
+  const index = low - 1;
+  const status = ended
+    ? t(language, ended === 'ended' ? 'ended' : 'lyricsStopped')
+    : t(language, snapshot?.paused ? 'paused' : 'nowPlaying');
+  const display = (line: Lyrics['lines'][number]) =>
+    escapeMarkdown(
+      line.text.trim() ? cleanText(line.text, 400) : t(language, 'lyricsInstrumental'),
+    );
+  const current = lyrics.lines[index];
+  const previous = lyrics.lines[index - 1];
+  const nearby: string[] = [];
+  if (previous) nearby.push(`> ${display(previous)}`);
+  nearby.push(`▶ **${current ? display(current) : t(language, 'lyricsIntro')}**`);
+  for (const line of lyrics.lines.slice(index + 1, index + 3)) nearby.push(`> ${display(line)}`);
+  const embed = baseEmbed(settings)
+    .setTitle(`${t(language, 'lyrics')} · ${cleanText(track.title, 170)}`)
+    .setAuthor({ name: `${t(language, 'karaoke')} · ${status}` })
+    .setDescription(ended ? t(language, 'lyricsFinished') : nearby.join('\n\n'))
+    .setFooter({ text: `${cleanText(lyrics.provider, 100)} · ${t(language, 'syncedLyrics')}` });
+  if (!ended && current)
+    embed.addFields({
+      name: t(language, 'lyricTimestamp'),
+      value: formatTime(current.timestampMs),
+    });
+  const artwork = safeWebUrl(track.artworkUrl);
+  if (artwork) embed.setThumbnail(artwork);
+  return {
+    key: `${index}:${status}`,
+    payload: { embeds: [embed], components: [] },
+  };
 }
 ````
 
@@ -2362,6 +2599,13 @@ export class MultiBotCoordinator {
   "ended": "Playback ended",
   "live": "LIVE",
   "lyrics": "Lyrics",
+  "karaoke": "Karaoke",
+  "syncedLyrics": "Synced lyrics",
+  "lyricsIntro": "Waiting for the first line…",
+  "lyricsInstrumental": "♪ Instrumental",
+  "lyricTimestamp": "Line starts at",
+  "lyricsStopped": "Lyrics stopped",
+  "lyricsFinished": "Run /lyrics again during playback to open a new karaoke view.",
   "help": "Command help",
   "settings": "Server settings",
   "stats": "Bot statistics",
@@ -2403,6 +2647,13 @@ export class MultiBotCoordinator {
   "ended": "Natapos ang pagtugtog",
   "live": "LIVE",
   "lyrics": "Mga titik",
+  "karaoke": "Karaoke",
+  "syncedLyrics": "Mga titik na kasabay ng kanta",
+  "lyricsIntro": "Hinihintay ang unang linya…",
+  "lyricsInstrumental": "♪ Instrumental",
+  "lyricTimestamp": "Simula ng linya",
+  "lyricsStopped": "Huminto ang mga titik",
+  "lyricsFinished": "Gamitin muli ang /lyrics habang tumutugtog para magbukas ng bagong karaoke view.",
   "help": "Gabay sa mga command",
   "settings": "Mga setting ng server",
   "stats": "Estadistika ng bot",
@@ -5413,6 +5664,35 @@ export const { slash, aliases, execute } = command;
 export default command;
 ````
 
+## C:/Users/USER/OneDrive/Documents/ChatGPT/discord-music-stream/src/commands/extras/lyrics.ts
+
+````typescript
+import { defineCommand } from '../../framework/Command.js';
+import { CommandError } from '../../framework/errors.js';
+import { readPolicy } from '../common.js';
+const command = defineCommand({
+  name: 'lyrics',
+  description: 'Show lyrics for the current song, synced when available',
+  category: 'extras',
+  policy: readPolicy,
+  execute: async (context) => {
+    const current = context.current();
+    const playbackId = context.snapshot?.currentPlaybackId;
+    const lyrics = await context.services.lyrics.get(
+      context.guildId,
+      current.track,
+      current.playable,
+    );
+    if (context.services.players.view(context.guildId)?.currentPlaybackId !== playbackId)
+      throw new CommandError('ARGUMENT', 'The track changed. Run lyrics again.');
+    if (!lyrics) throw new CommandError('ARGUMENT', 'Lyrics are unavailable for this track.');
+    await context.present({ kind: 'lyrics', track: current.track, lyrics });
+  },
+});
+export const { slash, aliases, execute } = command;
+export default command;
+````
+
 ## C:/Users/USER/OneDrive/Documents/ChatGPT/discord-music-stream/tsup.config.ts
 
 ````typescript
@@ -8411,9 +8691,19 @@ retaining the originating server for authorization. Ephemeral menus edit through
 their interaction webhook. Closed DMs still produce the existing friendly error.
 
 Help uses a category select and rechecks administrator visibility when changed.
-Lyrics use bounded pages. Timed lyrics show timestamped lines and update the current
-line at the controller interval while their two-minute menu is active; a track
-change removes their controls. Plain lyrics use the same pagination without a timer.
+`/lyrics` and `!lyrics` open a karaoke view when timestamped lyrics are available.
+The rolling window shows the previous line, a bold current line and the next two
+lines. It follows the engine's playback clock, including pauses, seeking and speed
+filters, for the whole track rather than expiring after two minutes. Local polling
+runs every 500 ms, and changed frames are serialized at least 1.5 seconds apart;
+Discord's REST client still handles server rate limits. Unchanged frames cause no
+HTTP edits, and slow requests discard intermediate frames. Intro/instrumental gaps
+are explicit, provider formatting is escaped, and simultaneous timestamps are
+combined. A track change, stop, inaccessible message or shutdown ends the view.
+Repeated public requests in one channel replace the older view, with at most three
+active views per server. Public views have a 24-hour cap; private slash replies stop
+before their 15-minute webhook token expires. Clean mode retains active views and
+cleans them after playback ends. Plain lyrics retain bounded, two-minute pagination.
 UI labels ship in English and Filipino/Tagalog. Command-authored notices remain
 English; the dictionaries and typed translation helper provide the extension point.
 
@@ -8520,9 +8810,17 @@ Local checks cover controller actions, stale playback races, expired/actor-bound
 menus, DM pagination, help permission changes, embed bounds, timed lyrics, health
 HTTP, serialized edits, event draining, natural completion, kicks, account selection,
 shard session ownership, concurrent restoration, cancelled startup, and readiness.
-All **216 local checks** pass: 50 engine checks, 92 command checks, and 74 runtime/UI/
+All **230 local checks** pass: 50 engine checks, 92 command checks, and 88 runtime/UI/
 authorization checks including safe startup diagnostics. Temporary checks are under ignored
 `data/phase-6-verification`; Phase 7 promotes them into the permanent test suite.
+
+Fourteen karaoke regressions cover playback beyond two minutes, pause/resume,
+forward/backward seeking, edit throttling, slow-edit coalescing, terminal edit
+draining, deleted messages, replacement views, intro/instrumental sections,
+timestamp sorting/grouping, embed bounds, stale lyric fetches, clean mode, private
+slash webhook expiry and shutdown. These checks use fixture lyrics and Discord
+message doubles; a live provider and audible Discord playback still need trying
+with `/lyrics` in the deployed bot.
 
 An actual local Lavalink 4.2.2 with all four configured plugins passed initial event
 readiness, session initialization, authenticated WAV loading, a real process restart,
@@ -8693,6 +8991,11 @@ Once bot deployment reports healthy, join a Discord voice channel and try:
 !queue
 !np
 ```
+
+For synchronized lyrics, run `/lyrics` or `!lyrics` while a song is playing. When
+the provider supplies timestamps, the karaoke view follows the full song, highlights
+the current line and shows nearby lines. Pause and seeking update the same message;
+songs with only plain lyrics use pages. No additional Railway variables are needed.
 
 Then test a short complete audio attachment to verify the private media bridge.
 Restart the bot service once and confirm a saved favorite/playlist remains available.
