@@ -16,6 +16,7 @@ export default defineConfig({
     'scripts/register-commands': 'scripts/register-commands.ts',
     'scripts/youtube-auth': 'scripts/youtube-auth.ts',
     'scripts/spotify-auth': 'scripts/spotify-auth.ts',
+    'scripts/railway-env': 'scripts/railway-env.ts',
   },
   format: ['esm'],
   platform: 'node',

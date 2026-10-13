@@ -38,7 +38,8 @@ export class HealthServer {
     server.headersTimeout = 5000;
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject);
-      server.listen(this.port, '0.0.0.0', () => {
+      // Node uses a dual-stack IPv6 listener when available, including Railway's private network.
+      server.listen(this.port, () => {
         server.off('error', reject);
         resolve();
       });

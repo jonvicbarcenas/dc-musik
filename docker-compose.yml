@@ -20,6 +20,7 @@ services:
       REDIS_URL: '${DOCKER_REDIS_URL:-}'
       HEALTH_PORT: '3000'
       MEDIA_BRIDGE_PORT: '3001'
+      MEDIA_CACHE_PATH: /app/media-cache
       MEDIA_BRIDGE_BIND: 0.0.0.0
       MEDIA_BRIDGE_PUBLIC_URL: http://bot:3001
     depends_on:
@@ -60,6 +61,7 @@ services:
     restart: unless-stopped
     environment:
       LAVALINK_PASSWORD: '${LAVALINK_PASSWORD:?Set LAVALINK_PASSWORD in .env}'
+      LAVALINK_BIND_ADDRESS: '${LAVALINK_BIND_ADDRESS:-0.0.0.0}'
       JAVA_TOOL_OPTIONS: '${LAVALINK_JAVA_OPTIONS:--Xms128m -Xmx512m}'
       SOURCE_COUNTRY_CODE: '${SOURCE_COUNTRY_CODE:-PH}'
       SPOTIFY_ENABLED: '${SPOTIFY_ENABLED:-false}'

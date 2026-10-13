@@ -114,6 +114,10 @@ export class SpotifyUserAuth {
       await release();
     }
   }
+  /** Deployment exports use the latest rotated credential without making a network request. */
+  async refreshToken(): Promise<string | undefined> {
+    return (await this.read())?.refreshToken ?? this.env.SPOTIFY_REFRESH_TOKEN;
+  }
   private async read(): Promise<SavedToken | null> {
     try {
       const size = await stat(this.path);

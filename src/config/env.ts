@@ -146,6 +146,10 @@ const envSchema = z
     IMPORT_CONCURRENCY: integer(3, 1, 8),
     HEALTH_PORT: integer(3000, 1, 65_535),
     MEDIA_BRIDGE_PORT: integer(3001, 1, 65_535),
+    MEDIA_CACHE_PATH: z.preprocess(
+      blankToUndefined,
+      z.string().trim().min(1).default('./media-cache'),
+    ),
     MEDIA_BRIDGE_BIND: hostname.default('127.0.0.1'),
     MEDIA_BRIDGE_PUBLIC_URL: z.preprocess(
       blankToUndefined,

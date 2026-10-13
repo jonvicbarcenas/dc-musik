@@ -5,6 +5,11 @@ Phase 6 of eight completes the runnable bot: `src/index.ts`, `src/bot.ts`, and
 search selection, and pagination. You can now configure credentials and try it.
 Phase 7 adds the permanent test suite; Phase 8 supplies the full README.
 
+For Railway hosting, follow [the deployment guide](./railway-deploy.md). It includes
+the three Docker services, private networking, a persistent volume and the private
+`npm run railway:env` export helper. The bot's upload cache can now be moved using
+`MEDIA_CACHE_PATH`; the default remains `./media-cache` for local runs.
+
 ## Try it now
 
 Choose one run mode per bot account. Keep credentials in `.env` and leave that file
@@ -313,7 +318,7 @@ Local checks cover controller actions, stale playback races, expired/actor-bound
 menus, DM pagination, help permission changes, embed bounds, timed lyrics, health
 HTTP, serialized edits, event draining, natural completion, kicks, account selection,
 shard session ownership, concurrent restoration, cancelled startup, and readiness.
-All **214 local checks** pass: 50 engine checks, 92 command checks, and 72 runtime/UI/
+All **216 local checks** pass: 50 engine checks, 92 command checks, and 74 runtime/UI/
 authorization checks including safe startup diagnostics. Temporary checks are under ignored
 `data/phase-6-verification`; Phase 7 promotes them into the permanent test suite.
 
@@ -360,3 +365,12 @@ playlist blocking, application-only rejection, crashed refresh-lease recovery an
 preservation of other credentials during setup. Two engine regressions verify
 specific first-page errors preserve existing queues and bypass no access controls.
 Real account sign-in and playlist import still require the operator's authorization.
+
+Railway deployment preparation verified all three production Docker builds with
+their bundled configuration. A disposable IPv6 network and volume passed private
+cipher authorization, authenticated Lavalink readiness, native DAVE loading,
+signed media delivery, Java decoding and SQLite/media persistence across a fresh
+container run. The root volume initializer dropped to UID 1000 before running the
+bot code. The variable exporter also passed credential-preservation and rotated
+Spotify-token checks. These isolated checks did not log in to Discord or create
+paid Railway resources; audible cloud playback remains a deployment-time check.

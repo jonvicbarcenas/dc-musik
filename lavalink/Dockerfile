@@ -6,6 +6,7 @@ RUN apt-get update \
     && mkdir -p /opt/Lavalink/plugins /opt/Lavalink/logs \
     && chown -R 322:322 /opt/Lavalink/plugins /opt/Lavalink/logs
 COPY lavalink/bootstrap.sh /opt/Lavalink/bootstrap.sh
+COPY --chown=322:322 lavalink/application.yml /opt/Lavalink/application.yml
 RUN chmod 755 /opt/Lavalink/bootstrap.sh
 USER 322:322
 ENTRYPOINT ["/bin/sh", "/opt/Lavalink/bootstrap.sh"]

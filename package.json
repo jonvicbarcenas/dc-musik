@@ -24,7 +24,8 @@
     "db:migrate": "tsx scripts/migrate.ts",
     "commands:register": "tsx scripts/register-commands.ts",
     "youtube:auth": "tsx scripts/youtube-auth.ts",
-    "spotify:auth": "tsx scripts/spotify-auth.ts"
+    "spotify:auth": "tsx scripts/spotify-auth.ts",
+    "railway:env": "tsx scripts/railway-env.ts"
   },
   "dependencies": {
     "better-sqlite3": "12.11.1",

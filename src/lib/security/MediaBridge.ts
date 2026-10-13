@@ -33,9 +33,10 @@ export class MediaBridge {
       | 'MEDIA_BRIDGE_PUBLIC_URL'
       | 'MEDIA_MAX_BYTES'
       | 'MEDIA_REQUEST_TIMEOUT_MS'
-    >,
+    > &
+      Partial<Pick<Env, 'MEDIA_CACHE_PATH'>>,
     private readonly http = new SafeHttpClient(),
-    directory = './media-cache',
+    directory = env.MEDIA_CACHE_PATH ?? './media-cache',
   ) {
     this.directory = resolve(directory);
   }

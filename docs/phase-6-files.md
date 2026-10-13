@@ -1,6 +1,6 @@
 # Phase 6 — Complete source files
 
-All 62 added or updated production files are reproduced in full, including the runtime guide. Temporary verification fixtures under ignored data/ remain reserved for the permanent test phase.
+All 67 added or updated production files are reproduced in full, including the runtime guide. Temporary verification fixtures under ignored data/ remain reserved for the permanent test phase.
 
 ## C:/Users/USER/OneDrive/Documents/ChatGPT/discord-music-stream/src/index.ts
 
@@ -1997,7 +1997,8 @@ export class HealthServer {
     server.headersTimeout = 5000;
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject);
-      server.listen(this.port, '0.0.0.0', () => {
+      // Node uses a dual-stack IPv6 listener when available, including Railway's private network.
+      server.listen(this.port, () => {
         server.off('error', reject);
         resolve();
       });
@@ -5069,9 +5070,10 @@ export class MediaBridge {
       | 'MEDIA_BRIDGE_PUBLIC_URL'
       | 'MEDIA_MAX_BYTES'
       | 'MEDIA_REQUEST_TIMEOUT_MS'
-    >,
+    > &
+      Partial<Pick<Env, 'MEDIA_CACHE_PATH'>>,
     private readonly http = new SafeHttpClient(),
-    directory = './media-cache',
+    directory = env.MEDIA_CACHE_PATH ?? './media-cache',
   ) {
     this.directory = resolve(directory);
   }
@@ -5432,6 +5434,7 @@ export default defineConfig({
     'scripts/register-commands': 'scripts/register-commands.ts',
     'scripts/youtube-auth': 'scripts/youtube-auth.ts',
     'scripts/spotify-auth': 'scripts/spotify-auth.ts',
+    'scripts/railway-env': 'scripts/railway-env.ts',
   },
   format: ['esm'],
   platform: 'node',
@@ -5475,17 +5478,40 @@ RUN npm ci --omit=dev && npm cache clean --force
 
 FROM base AS runtime
 ENV NODE_ENV=production
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gosu tini \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=production-dependencies /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./
 # Source migration assets remain available for diagnostics; the runtime uses dist/migrations.
 COPY src ./src
-RUN mkdir -p /app/data /app/media-cache && chown -R node:node /app/data /app/media-cache
+COPY docker/bootstrap.sh /app/docker/bootstrap.sh
+RUN mkdir -p /app/data /app/media-cache /app/persist/media \
+    && chown -R node:node /app/data /app/media-cache /app/persist \
+    && chmod 755 /app/docker/bootstrap.sh
 USER node
 EXPOSE 3000 3001
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
     CMD ["node", "dist/scripts/healthcheck.js"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/bin/sh", "/app/docker/bootstrap.sh"]
 CMD ["node", "--enable-source-maps", "dist/index.js"]
+````
+
+## C:/Users/USER/OneDrive/Documents/ChatGPT/discord-music-stream/docker/bootstrap.sh
+
+````dockerfile
+#!/bin/sh
+set -eu
+
+# Railway mounts volumes as root. RAILWAY_RUN_UID=0 starts only this initializer as root.
+# The bot itself always runs as the existing node user, including normal Compose runs.
+if [ "$(id -u)" = 0 ]; then
+  mkdir -p /app/persist/media /app/data /app/media-cache
+  chown node:node /app/persist /app/persist/media /app/data /app/media-cache
+  exec gosu node "$@"
+fi
+exec "$@"
 ````
 
 ## C:/Users/USER/OneDrive/Documents/ChatGPT/discord-music-stream/docker-compose.yml
@@ -5513,6 +5539,7 @@ services:
       REDIS_URL: '${DOCKER_REDIS_URL:-}'
       HEALTH_PORT: '3000'
       MEDIA_BRIDGE_PORT: '3001'
+      MEDIA_CACHE_PATH: /app/media-cache
       MEDIA_BRIDGE_BIND: 0.0.0.0
       MEDIA_BRIDGE_PUBLIC_URL: http://bot:3001
     depends_on:
@@ -5553,6 +5580,7 @@ services:
     restart: unless-stopped
     environment:
       LAVALINK_PASSWORD: '${LAVALINK_PASSWORD:?Set LAVALINK_PASSWORD in .env}'
+      LAVALINK_BIND_ADDRESS: '${LAVALINK_BIND_ADDRESS:-0.0.0.0}'
       JAVA_TOOL_OPTIONS: '${LAVALINK_JAVA_OPTIONS:--Xms128m -Xmx512m}'
       SOURCE_COUNTRY_CODE: '${SOURCE_COUNTRY_CODE:-PH}'
       SPOTIFY_ENABLED: '${SPOTIFY_ENABLED:-false}'
@@ -5694,12 +5722,42 @@ volumes:
   redis-data:
 ````
 
+## C:/Users/USER/OneDrive/Documents/ChatGPT/discord-music-stream/lavalink/Dockerfile
+
+````dockerfile
+FROM ghcr.io/lavalink-devs/lavalink:4.2.2
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /opt/Lavalink/plugins /opt/Lavalink/logs \
+    && chown -R 322:322 /opt/Lavalink/plugins /opt/Lavalink/logs
+COPY lavalink/bootstrap.sh /opt/Lavalink/bootstrap.sh
+COPY --chown=322:322 lavalink/application.yml /opt/Lavalink/application.yml
+RUN chmod 755 /opt/Lavalink/bootstrap.sh
+USER 322:322
+ENTRYPOINT ["/bin/sh", "/opt/Lavalink/bootstrap.sh"]
+````
+
+## C:/Users/USER/OneDrive/Documents/ChatGPT/discord-music-stream/lavalink/cipher.Dockerfile
+
+````dockerfile
+FROM ghcr.io/kikkia/yt-cipher:master@sha256:4c5ec381ff57336cfc24822d2b526a5ad7cd0171f61065a1bbc87bb736842449
+# Railway private networking uses IPv6. The writable cache remains disposable.
+ENV HOST=:: \
+    PORT=8001 \
+    MAX_THREADS=2 \
+    PREPROCESSED_CACHE_SIZE=20 \
+    OVERRIDE_PLAYER_VARIANT=IAS \
+    XDG_CACHE_HOME=/tmp/yt-cipher
+````
+
 ## C:/Users/USER/OneDrive/Documents/ChatGPT/discord-music-stream/lavalink/application.yml
 
 ````yaml
 server:
   port: 2333
-  address: 0.0.0.0
+  address: '${LAVALINK_BIND_ADDRESS:0.0.0.0}'
   http2:
     enabled: false
 
@@ -5927,6 +5985,7 @@ SUPPORT_URL=
 
 HEALTH_PORT=3000
 MEDIA_BRIDGE_PORT=3001
+MEDIA_CACHE_PATH=./media-cache
 MEDIA_BRIDGE_BIND=127.0.0.1
 # Must be reachable from every Lavalink node; compose replaces this with http://bot:3001.
 MEDIA_BRIDGE_PUBLIC_URL=http://127.0.0.1:3001
@@ -5972,6 +6031,7 @@ YOUTUBE_VISITOR_DATA=
 SPONSORBLOCK_ENABLED=false
 
 # Lavalink-only configuration, also passed by Compose.
+LAVALINK_BIND_ADDRESS=0.0.0.0
 LAVALINK_JAVA_OPTIONS=-Xms128m -Xmx512m
 YOUTUBE_PLAYLIST_PAGES=20
 SPOTIFY_PLAYLIST_PAGES=20
@@ -6140,6 +6200,10 @@ const envSchema = z
     IMPORT_CONCURRENCY: integer(3, 1, 8),
     HEALTH_PORT: integer(3000, 1, 65_535),
     MEDIA_BRIDGE_PORT: integer(3001, 1, 65_535),
+    MEDIA_CACHE_PATH: z.preprocess(
+      blankToUndefined,
+      z.string().trim().min(1).default('./media-cache'),
+    ),
     MEDIA_BRIDGE_BIND: hostname.default('127.0.0.1'),
     MEDIA_BRIDGE_PUBLIC_URL: z.preprocess(
       blankToUndefined,
@@ -6566,6 +6630,187 @@ try {
 }
 ````
 
+## C:/Users/USER/OneDrive/Documents/ChatGPT/discord-music-stream/scripts/railway-env.ts
+
+````typescript
+import { randomUUID } from 'node:crypto';
+import { mkdir, rename, unlink, writeFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import { ConfigurationError, loadEnv } from '../src/config/env.js';
+import { SpotifyUserAuth } from '../src/lib/music/SpotifyUserAuth.js';
+import { SafeHttpClient } from '../src/lib/security/SafeHttpClient.js';
+
+async function save(name: string, values: Readonly<Record<string, string>>): Promise<void> {
+  const destination = resolve('data/railway', name);
+  const temporary = `${destination}.${randomUUID()}.tmp`;
+  const text =
+    Object.entries(values)
+      .map(([key, value]) => {
+        if (/[\r\n\0]/.test(value)) throw new Error('Unsupported multi-line variable.');
+        // dotenv quoting preserves passwords and literal reference variables for Railway's Raw Editor.
+        return `${key}=${JSON.stringify(value)}`;
+      })
+      .join('\n') + '\n';
+  try {
+    await writeFile(temporary, text, { flag: 'wx', mode: 0o600 });
+    await rename(temporary, destination);
+  } finally {
+    await unlink(temporary).catch(() => undefined);
+  }
+}
+async function main(): Promise<void> {
+  const args = process.argv.slice(2);
+  if (args.length === 1 && args[0] === '--help') {
+    console.log(
+      'npm run railway:env   Write private bot.env, lavalink.env and cipher.env under ignored data/railway.',
+    );
+    console.log(
+      'Paste each file into the matching Railway service Variables > Raw Editor. Values are never printed.',
+    );
+    return;
+  }
+  if (args.length) throw new Error('Use npm run railway:env or --help.');
+  const env = loadEnv();
+  if (!env.LAVALINK_PASSWORD)
+    throw new Error('Set LAVALINK_PASSWORD for the Railway audio service.');
+  const password = env.LAVALINK_PASSWORD;
+  const cipherPassword = env.YOUTUBE_CIPHER_PASSWORD ?? password;
+  await mkdir('data/railway', { recursive: true, mode: 0o700 });
+  const bot: Record<string, string> = {
+    NODE_ENV: 'production',
+    LOG_PRETTY: 'false',
+    LOG_LEVEL: env.LOG_LEVEL,
+    DISCORD_TOKEN: env.DISCORD_TOKEN,
+    DISCORD_CLIENT_ID: env.DISCORD_CLIENT_ID,
+    DISCORD_GUILD_ID: env.DISCORD_GUILD_ID ?? '',
+    OWNER_IDS: env.OWNER_IDS.join(','),
+    EXTRA_BOT_TOKENS: JSON.stringify(env.EXTRA_BOT_TOKENS),
+    SHARD_COUNT: '1',
+    RAILWAY_RUN_UID: '0',
+    RAILWAY_DOCKERFILE_PATH: 'Dockerfile',
+    PORT: '3000',
+    HEALTH_PORT: '3000',
+    DATABASE_PATH: '/app/persist/music.sqlite',
+    MEDIA_CACHE_PATH: '/app/persist/media',
+    MEDIA_BRIDGE_PORT: '3001',
+    MEDIA_BRIDGE_BIND: '::',
+    MEDIA_BRIDGE_PUBLIC_URL: 'http://${{bot.RAILWAY_PRIVATE_DOMAIN}}:3001',
+    LAVALINK_HOST: '${{lavalink.RAILWAY_PRIVATE_DOMAIN}}',
+    LAVALINK_PORT: '2333',
+    LAVALINK_SECURE: 'false',
+    LAVALINK_PASSWORD: password,
+    LAVALINK_NODES: '[]',
+    REDIS_URL: '',
+    SOURCE_COUNTRY_CODE: env.SOURCE_COUNTRY_CODE,
+    SPOTIFY_ENABLED: String(env.SPOTIFY_ENABLED),
+    SPOTIFY_CLIENT_ID: env.SPOTIFY_CLIENT_ID ?? '',
+    SPOTIFY_CLIENT_SECRET: env.SPOTIFY_CLIENT_SECRET ?? '',
+    SPOTIFY_REFRESH_TOKEN:
+      (await new SpotifyUserAuth(env, new SafeHttpClient()).refreshToken()) ?? '',
+    DEFAULT_PREFIX: env.DEFAULT_PREFIX,
+    DEFAULT_LANGUAGE: env.DEFAULT_LANGUAGE,
+    DEFAULT_VOLUME: String(env.DEFAULT_VOLUME),
+    MAX_QUEUE_SIZE: String(env.MAX_QUEUE_SIZE),
+    MAX_PLAYLIST_IMPORT: String(env.MAX_PLAYLIST_IMPORT),
+    MAX_TRACK_LENGTH_SECONDS: String(env.MAX_TRACK_LENGTH_SECONDS),
+    SPONSORBLOCK_ENABLED: String(env.SPONSORBLOCK_ENABLED),
+  };
+  const lavalink: Record<string, string> = {
+    RAILWAY_DOCKERFILE_PATH: 'lavalink/Dockerfile',
+    PORT: '2333',
+    LAVALINK_BIND_ADDRESS: '::',
+    LAVALINK_PASSWORD: password,
+    JAVA_TOOL_OPTIONS: '-Xms128m -Xmx512m',
+    SOURCE_COUNTRY_CODE: env.SOURCE_COUNTRY_CODE,
+    YOUTUBE_CIPHER_URL: 'http://${{cipher.RAILWAY_PRIVATE_DOMAIN}}:8001',
+    YOUTUBE_CIPHER_PASSWORD: cipherPassword,
+    YOUTUBE_OAUTH_ENABLED: String(env.YOUTUBE_OAUTH_ENABLED),
+    YOUTUBE_OAUTH_REFRESH_TOKEN: env.YOUTUBE_OAUTH_REFRESH_TOKEN ?? '',
+    YOUTUBE_OAUTH_SKIP_INITIALIZATION: String(Boolean(env.YOUTUBE_OAUTH_REFRESH_TOKEN)),
+    YOUTUBE_PO_TOKEN: env.YOUTUBE_PO_TOKEN ?? '',
+    YOUTUBE_VISITOR_DATA: env.YOUTUBE_VISITOR_DATA ?? '',
+  };
+  const forwarded = [
+    'SPOTIFY_ENABLED',
+    'SPOTIFY_CLIENT_ID',
+    'SPOTIFY_CLIENT_SECRET',
+    'SPOTIFY_SP_DC',
+    'SPOTIFY_TOKEN_ENDPOINT',
+    'APPLE_MUSIC_ENABLED',
+    'APPLE_MUSIC_TOKEN',
+    'DEEZER_ENABLED',
+    'DEEZER_ARL',
+    'DEEZER_MASTER_DECRYPTION_KEY',
+    'YANDEX_MUSIC_ENABLED',
+    'YANDEX_MUSIC_ACCESS_TOKEN',
+    'YOUTUBE_PLAYLIST_PAGES',
+    'SPOTIFY_PLAYLIST_PAGES',
+    'SPOTIFY_ALBUM_PAGES',
+    'APPLE_MUSIC_PLAYLIST_PAGES',
+    'APPLE_MUSIC_ALBUM_PAGES',
+    'YANDEX_PLAYLIST_PAGES',
+    'YANDEX_ALBUM_PAGES',
+    'YANDEX_ARTIST_PAGES',
+    'YOUTUBE_LYRICS_ENABLED',
+    'SPOTIFY_LYRICS_ENABLED',
+    'DEEZER_LYRICS_ENABLED',
+    'YANDEX_LYRICS_ENABLED',
+    'LAVALINK_SOURCE_SOCKET_TIMEOUT_MS',
+  ] as const;
+  for (const key of forwarded) {
+    lavalink[key] = env[key] === undefined ? '' : String(env[key]);
+    bot[key] = lavalink[key]!;
+  }
+  const preferences = [
+    'EMBED_COLOR',
+    'SUPPORT_URL',
+    'AUTO_LEAVE_TIMEOUT_SECONDS',
+    'COMMAND_COOLDOWN_MS',
+    'CONTROLLER_UPDATE_INTERVAL_MS',
+    'IMPORT_CONCURRENCY',
+    'MEDIA_MAX_BYTES',
+    'MEDIA_REQUEST_TIMEOUT_MS',
+    'LAVALINK_RESUME_TIMEOUT_SECONDS',
+    'LAVALINK_REQUEST_TIMEOUT_MS',
+  ] as const;
+  for (const key of preferences) bot[key] = env[key] === undefined ? '' : String(env[key]);
+  await save('cipher.env', {
+    RAILWAY_DOCKERFILE_PATH: 'lavalink/cipher.Dockerfile',
+    PORT: '8001',
+    HOST: '::',
+    API_TOKEN: cipherPassword,
+    MAX_THREADS: '2',
+    PREPROCESSED_CACHE_SIZE: '20',
+    OVERRIDE_PLAYER_VARIANT: 'IAS',
+    XDG_CACHE_HOME: '/tmp/yt-cipher',
+  });
+  await save('lavalink.env', lavalink);
+  await save('bot.env', bot);
+  console.log(
+    'Prepared private Railway variables: data/railway/bot.env, lavalink.env, cipher.env.',
+  );
+  console.log(
+    'Credentials were not printed. These files stay excluded from Git and Docker builds.',
+  );
+  console.log(
+    'Create services named bot, lavalink and cipher, then paste the matching file into each Raw Editor.',
+  );
+  console.log(
+    'Attach the bot volume at /app/persist before starting it. Stop the local bot before running the cloud copy.',
+  );
+}
+try {
+  await main();
+} catch (error) {
+  console.error(
+    error instanceof ConfigurationError
+      ? error.message
+      : 'Railway variable export failed. Check configuration and writable data/railway, then retry.',
+  );
+  process.exitCode = 1;
+}
+````
+
 ## C:/Users/USER/OneDrive/Documents/ChatGPT/discord-music-stream/src/lib/music/SpotifyUserAuth.ts
 
 ````typescript
@@ -6684,6 +6929,10 @@ export class SpotifyUserAuth {
     } finally {
       await release();
     }
+  }
+  /** Deployment exports use the latest rotated credential without making a network request. */
+  async refreshToken(): Promise<string | undefined> {
+    return (await this.read())?.refreshToken ?? this.env.SPOTIFY_REFRESH_TOKEN;
   }
   private async read(): Promise<SavedToken | null> {
     try {
@@ -7910,7 +8159,8 @@ export function errorCode(error: unknown): string {
     "db:migrate": "tsx scripts/migrate.ts",
     "commands:register": "tsx scripts/register-commands.ts",
     "youtube:auth": "tsx scripts/youtube-auth.ts",
-    "spotify:auth": "tsx scripts/spotify-auth.ts"
+    "spotify:auth": "tsx scripts/spotify-auth.ts",
+    "railway:env": "tsx scripts/railway-env.ts"
   },
   "dependencies": {
     "better-sqlite3": "12.11.1",
@@ -7956,6 +8206,11 @@ Phase 6 of eight completes the runnable bot: `src/index.ts`, `src/bot.ts`, and
 `src/shard.ts`, Discord/Lavalink event adapters, localized embeds, the live controller,
 search selection, and pagination. You can now configure credentials and try it.
 Phase 7 adds the permanent test suite; Phase 8 supplies the full README.
+
+For Railway hosting, follow [the deployment guide](./railway-deploy.md). It includes
+the three Docker services, private networking, a persistent volume and the private
+`npm run railway:env` export helper. The bot's upload cache can now be moved using
+`MEDIA_CACHE_PATH`; the default remains `./media-cache` for local runs.
 
 ## Try it now
 
@@ -8265,7 +8520,7 @@ Local checks cover controller actions, stale playback races, expired/actor-bound
 menus, DM pagination, help permission changes, embed bounds, timed lyrics, health
 HTTP, serialized edits, event draining, natural completion, kicks, account selection,
 shard session ownership, concurrent restoration, cancelled startup, and readiness.
-All **214 local checks** pass: 50 engine checks, 92 command checks, and 72 runtime/UI/
+All **216 local checks** pass: 50 engine checks, 92 command checks, and 74 runtime/UI/
 authorization checks including safe startup diagnostics. Temporary checks are under ignored
 `data/phase-6-verification`; Phase 7 promotes them into the permanent test suite.
 
@@ -8312,5 +8567,186 @@ playlist blocking, application-only rejection, crashed refresh-lease recovery an
 preservation of other credentials during setup. Two engine regressions verify
 specific first-page errors preserve existing queues and bypass no access controls.
 Real account sign-in and playlist import still require the operator's authorization.
+
+Railway deployment preparation verified all three production Docker builds with
+their bundled configuration. A disposable IPv6 network and volume passed private
+cipher authorization, authenticated Lavalink readiness, native DAVE loading,
+signed media delivery, Java decoding and SQLite/media persistence across a fresh
+container run. The root volume initializer dropped to UID 1000 before running the
+bot code. The variable exporter also passed credential-preservation and rotated
+Spotify-token checks. These isolated checks did not log in to Discord or create
+paid Railway resources; audible cloud playback remains a deployment-time check.
+````
+
+## C:/Users/USER/OneDrive/Documents/ChatGPT/discord-music-stream/docs/railway-deploy.md
+
+````markdown
+# Deploy dc-musik on Railway
+
+Use the `master` branch of [jonvicbarcenas/dc-musik](https://github.com/jonvicbarcenas/dc-musik).
+Create one Railway project with three services named **bot**, **lavalink**, and
+**cipher**. All three use the same GitHub repository and keep the repository root
+as their Root Directory. Each builds a different Dockerfile.
+
+Railway translates a Compose application into separate services; local bind mounts,
+startup dependencies and credentials still need configuring. Follow the steps below
+using the [Railway dashboard](https://railway.com/dashboard). Its
+[Compose deployment guide](https://docs.railway.com/guides/docker-compose) describes
+the same service mapping.
+
+## Prepare the variables on your computer
+
+From this project directory, run:
+
+```powershell
+npm run railway:env
+```
+
+This creates three **private local files** under `data/railway`. They are excluded
+from Git and Docker builds. The exporter reads your `.env` and the latest rotated
+Spotify refresh token, without contacting Discord or printing credentials.
+
+| Railway service | Variables → Raw Editor: paste the contents of |
+| --------------- | --------------------------------------------- |
+| bot             | `data/railway/bot.env`                        |
+| lavalink        | `data/railway/lavalink.env`                   |
+| cipher          | `data/railway/cipher.env`                     |
+
+Paste each file's contents directly into the matching service's **Variables → Raw
+Editor**, then save. The generated files include literal Railway references such
+as `${{lavalink.RAILWAY_PRIVATE_DOMAIN}}`; keep those references. The names in the
+references match the three service names above. Railway resolves them after all
+three services exist. Credentials belong in Variables, never in a repository file.
+After changing local account authorization, rerun the exporter and update the
+affected Railway variables.
+
+## Create and configure the services
+
+1. Sign in to Railway and choose **New Project → Empty Project**.
+2. Add **GitHub Repo** and choose `jonvicbarcenas/dc-musik`, branch `master`.
+   Name the service **cipher**. Add the same repository twice more and name those
+   services **lavalink** and **bot**. Keep Root Directory at the repository root for
+   all three; the Dockerfiles need files from that root.
+3. In each service's Settings, use these build/deploy settings:
+
+   | Setting               | bot                    | lavalink               | cipher                       |
+   | --------------------- | ---------------------- | ---------------------- | ---------------------------- |
+   | Builder               | Dockerfile             | Dockerfile             | Dockerfile                   |
+   | Dockerfile Path       | `Dockerfile`           | `lavalink/Dockerfile`  | `lavalink/cipher.Dockerfile` |
+   | Custom Start Command  | Leave empty            | Leave empty            | Leave empty                  |
+   | Healthcheck Path      | `/health`              | Leave empty            | `/`                          |
+   | Healthcheck Timeout   | 600 seconds            | Default                | 120 seconds                  |
+   | Serverless / sleeping | Disabled               | Disabled               | Disabled                     |
+   | Replicas              | 1                      | 1                      | 1                            |
+   | Restart Policy        | On Failure, 10 retries | On Failure, 10 retries | On Failure, 10 retries       |
+   | Deployment draining   | 60 seconds             | 20 seconds             | 10 seconds                   |
+
+   If the Dockerfile Path field is unavailable, add `RAILWAY_DOCKERFILE_PATH` in
+   Variables with the path from the table. The exporter already includes that variable
+   in each private file. The generated `PORT` variable is 3000,
+   2333, or 8001 respectively. Leave Build Command and Pre-deploy Command empty:
+   Docker performs the build and the bot migrates SQLite at runtime, after its
+   volume has been mounted.
+
+   Keep all three in the same region/environment. Singapore is a reasonable first
+   choice for a Philippine Discord server if your Railway project offers it.
+   Configure a memory limit with room for Java's heap and native audio libraries;
+   1 GB for Lavalink is a starting limit, not a measured capacity guarantee. The
+   default Java heap is capped at 512 MB. Bot and cipher memory needs depend on
+   queue size, uploads and concurrent playback. Measure usage after your first test.
+
+4. Paste the corresponding private variable files using the table above.
+5. Add a **Volume** to **bot**, mounted at exactly:
+
+   ```text
+   /app/persist
+   ```
+
+   Choose an initial size suitable for your uploaded audio, for example 1 GB.
+   The exporter sets `DATABASE_PATH=/app/persist/music.sqlite` and
+   `MEDIA_CACHE_PATH=/app/persist/media`, so SQLite, queues, libraries, Spotify
+   authorization and uploaded audio all use the same persistent volume.
+   `RAILWAY_RUN_UID=0` permits the container initializer to set ownership of the
+   mounted directory; it immediately drops to the existing `node` user before
+   running the bot. See [Railway volume permissions](https://docs.railway.com/volumes#permissions).
+
+6. Deploy **cipher**, then **lavalink**. The cipher logs should report that its
+   server is listening. Lavalink should finish loading its plugins and bind to
+   port 2333. Lavalink's REST API requires its password, so `/version` is unsuitable
+   as an unauthenticated Railway healthcheck; leave that field empty. The bot's
+   readiness check verifies its authenticated Lavalink connection.
+7. In your local `npm run dev` terminal, press **Ctrl+C** before deploying **bot**.
+   Run one copy per Discord account. Deploy **bot** and wait for `/health` to pass.
+
+The images include their configuration and listen on IPv6/IPv4 for Railway's
+[private network](https://docs.railway.com/networking/private-networking/library-configuration).
+The bot reaches Lavalink on port 2333, Lavalink reaches cipher on 8001, and Lavalink
+fetches signed upload URLs from the bot on 3001. Public domains are optional for
+these services; their internal connections use Railway's private domains.
+
+## Verify playback
+
+Once bot deployment reports healthy, join a Discord voice channel and try:
+
+```text
+!play Hale - Blue Sky
+!queue
+!np
+```
+
+Then test a short complete audio attachment to verify the private media bridge.
+Restart the bot service once and confirm a saved favorite/playlist remains available.
+A fresh Railway volume begins with an empty database; local saved libraries are
+not copied automatically.
+
+For slash commands that have not been registered already, register from your local
+computer using the same bot application and server configuration:
+
+```powershell
+npm run commands:register
+```
+
+The health endpoint verifies Discord login and the authenticated audio-node
+connection. It cannot prove that a particular third-party track or Discord voice
+stream succeeds; that requires the playback checks above.
+
+## Source authorization
+
+The exporter copies saved YouTube OAuth configuration to Lavalink and Spotify
+authorization to bot. Authorize accounts locally with `npm run youtube:auth` or
+`npm run spotify:auth`, then regenerate/update the matching private variable file
+if access changes. The Spotify helper uses a local callback and runs on your
+computer. Lavalink source access can differ on a cloud IP; a failed track still
+requires checking the source's actual error privately.
+
+Spotify playlist contents require an authorized owner/collaborator even when the
+playlist is public. [Spotify documents this restriction](https://developer.spotify.com/documentation/web-api/reference/get-playlists-items).
+
+## Troubleshooting
+
+| Symptom                           | Check                                                                                                                                                    |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Bot health stays pending          | Both other services are running, all service names/references match, Lavalink password matches, and the Discord token/Message Content Intent is correct. |
+| `EACCES` while opening data/media | bot volume is mounted at `/app/persist` and `RAILWAY_RUN_UID=0` is present.                                                                              |
+| Audio-node connection unavailable | bot `LAVALINK_HOST` references lavalink's private domain, port is 2333, secure is false, and Lavalink listens on `::`.                                   |
+| YouTube cipher unavailable        | Lavalink `YOUTUBE_CIPHER_URL` references cipher's private domain on 8001, and its cipher password matches cipher `API_TOKEN`.                            |
+| Uploaded audio fails              | bot media bind is `::`, its public URL references bot's private domain on port 3001, and media files use `/app/persist/media`.                           |
+| Data disappears after a restart   | Verify the volume mount and the database/media paths before adding more saved content.                                                                   |
+| Slash commands missing            | Invite with `applications.commands` and run local command registration for the same application/server.                                                  |
+
+Keep account tokens and raw provider logs private. Railway has
+[usage-based pricing](https://docs.railway.com/pricing/plans); the Hobby plan includes
+$5 of usage, and extra usage is billed. These steps create paid resources when you
+apply/deploy them in your Railway account.
+
+## What has been checked
+
+Type checking, lint, formatting and builds are verified locally. The production
+Docker images are checked using an isolated IPv6 Docker network and a disposable
+volume, with fixture credentials: cipher authentication, Lavalink readiness, DAVE
+library loading, Java WAV decoding, IPv6 health/media HTTP and database/media
+persistence across a container restart passed. The bot ran as UID 1000 after its
+root initializer corrected the volume ownership. The real Railway deployment and audible Discord
+playback still require completing the steps in your Railway account.
 ````
 
