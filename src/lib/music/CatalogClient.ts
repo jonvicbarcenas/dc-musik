@@ -5,6 +5,7 @@ import { MusicError } from '../utils/errors.js';
 import type { CatalogPage, RawTrack } from './types.js';
 import { toResolvedItem } from './TrackCodec.js';
 import { SpotifyUserAuth, spotifySignInRequired } from './SpotifyUserAuth.js';
+import { SpotifyPublicPlaylist } from './SpotifyPublicPlaylist.js';
 
 export function object(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -26,15 +27,19 @@ export class CatalogClient {
   private token: { value: string; expiresAt: number } | null = null;
   private readonly tokenLock = new AsyncLock();
   private readonly userAuth: SpotifyUserAuth;
+  private readonly publicPlaylist: SpotifyPublicPlaylist;
   constructor(
     private readonly env: Pick<
       Env,
       'SPOTIFY_ENABLED' | 'SPOTIFY_CLIENT_ID' | 'SPOTIFY_CLIENT_SECRET' | 'SOURCE_COUNTRY_CODE'
     > &
-      Partial<Pick<Env, 'SPOTIFY_REFRESH_TOKEN' | 'DATABASE_PATH'>>,
+      Partial<
+        Pick<Env, 'SPOTIFY_REFRESH_TOKEN' | 'DATABASE_PATH' | 'SPOTIFY_PUBLIC_PLAYLIST_FALLBACK'>
+      >,
     private readonly http = new SafeHttpClient(),
   ) {
     this.userAuth = new SpotifyUserAuth(env, http);
+    this.publicPlaylist = new SpotifyPublicPlaylist(http);
   }
 
   supports(url: URL): boolean {
@@ -142,7 +147,11 @@ export class CatalogClient {
     const root = `https://api.spotify.com/v1/${kind}s/${id}`;
     const market = this.env.SOURCE_COUNTRY_CODE;
     let playlistName = `Spotify ${kind}`;
-    if (kind === 'playlist' && this.env.SPOTIFY_REFRESH_TOKEN) {
+    let publicPlaylist = false;
+    if (
+      kind === 'playlist' &&
+      (this.env.SPOTIFY_REFRESH_TOKEN || this.env.SPOTIFY_PUBLIC_PLAYLIST_FALLBACK !== false)
+    ) {
       const playlist = object(await this.spotifyRequest(root, signal));
       // The operator's authorization is shared by the bot; never disclose their private libraries.
       if (playlist['public'] !== true)
@@ -151,6 +160,7 @@ export class CatalogClient {
           'Only public Spotify playlists can be imported. Make this playlist public and sign in with its owner or a collaborator.',
         );
       playlistName = string(playlist['name']) || playlistName;
+      publicPlaylist = true;
     }
     if (kind === 'track' || kind === 'artist') {
       const response = await this.spotifyRequest(
@@ -169,12 +179,51 @@ export class CatalogClient {
     while (offset < limit) {
       const size = Math.min(offset === 0 ? 5 : 50, limit - offset);
       const suffix = kind === 'playlist' ? 'items' : 'tracks';
-      const response = object(
-        await this.spotifyRequest(
-          `${root}/${suffix}?limit=${size}&offset=${offset}&market=${market}`,
-          signal,
-        ),
-      );
+      let response: Record<string, unknown>;
+      try {
+        response = object(
+          await this.spotifyRequest(
+            `${root}/${suffix}?limit=${size}&offset=${offset}&market=${market}`,
+            signal,
+          ),
+        );
+      } catch (error) {
+        if (
+          kind !== 'playlist' ||
+          offset !== 0 ||
+          !publicPlaylist ||
+          this.env.SPOTIFY_PUBLIC_PLAYLIST_FALLBACK === false ||
+          !(error instanceof MusicError) ||
+          !['SPOTIFY_AUTH_REQUIRED', 'SPOTIFY_ACCESS_DENIED'].includes(error.code)
+        )
+          throw error;
+        signal?.throwIfAborted();
+        const rendered = await this.publicPlaylist.get(id, signal);
+        if (!rendered) throw error;
+        const items = rendered.tracks.slice(0, limit).flatMap((track) => {
+          try {
+            return [toResolvedItem(track)];
+          } catch {
+            return [];
+          }
+        });
+        if (!items.length) throw error;
+        for (let index = 0; index < items.length; index += index === 0 ? 5 : 50) {
+          signal?.throwIfAborted();
+          yield {
+            name: rendered.name || playlistName,
+            items: items.slice(index, index + (index === 0 ? 5 : 50)),
+            total: null,
+            ...(index === 0
+              ? {
+                  notice:
+                    'Imported from Spotify’s public playlist view (up to 100 tracks). Longer playlists may be incomplete; the full playlist was not verified.',
+                }
+              : {}),
+          };
+        }
+        return;
+      }
       const records = array(response['items']);
       if (!records.length) return;
       yield {

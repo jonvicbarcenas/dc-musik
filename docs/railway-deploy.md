@@ -141,8 +141,14 @@ if access changes. The Spotify helper uses a local callback and runs on your
 computer. Lavalink source access can differ on a cloud IP; a failed track still
 requires checking the source's actual error privately.
 
-Spotify playlist contents require an authorized owner/collaborator even when the
-playlist is public. [Spotify documents this restriction](https://developer.spotify.com/documentation/web-api/reference/get-playlists-items).
+Full imports through Spotify's new playlist API require an authorized owner or
+collaborator even for public playlists. [Spotify documents this restriction](https://developer.spotify.com/documentation/web-api/reference/get-playlists-items).
+The bot also enables `SPOTIFY_PUBLIC_PLAYLIST_FALLBACK=true` by default. After the
+API confirms a playlist is public, a denied first items request can use the unsigned
+public embed metadata. This imports up to 100 visible entries and warns that the
+full playlist has not been verified. It can change or fail upstream and does not
+handle private playlists. Set this variable to `false` in **bot** Variables to use
+only the API. Spotify's [terms restrict unauthorized automated retrieval](https://developer.spotify.com/terms#section-iv-restrictions).
 
 ## Troubleshooting
 

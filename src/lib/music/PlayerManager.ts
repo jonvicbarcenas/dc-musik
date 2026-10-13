@@ -1070,7 +1070,7 @@ export class PlayerManager extends EventEmitter<EngineEvents> {
     this.imports.start(
       structuredClone(job),
       {
-        append: (id, items, processed, name, total) =>
+        append: (id, items, processed, name, total, notice) =>
           this.locked(session, async () => {
             if (session.closed) return false;
             const active = session.state.pendingImports.find((pending) => pending.id === id);
@@ -1127,6 +1127,7 @@ export class PlayerManager extends EventEmitter<EngineEvents> {
             }
             await this.persist(session);
             if (waiter && waiter.count >= 5 && !waiter.settled) this.settleImport(id, waiter, true);
+            if (notice) this.emit('notice', session.state.guildId, notice);
             this.emit(
               'importProgress',
               session.state.guildId,

@@ -176,6 +176,7 @@ const envSchema = z
       .regex(/^[A-Z]{2}$/)
       .default('PH'),
     SPOTIFY_ENABLED: boolean(false),
+    SPOTIFY_PUBLIC_PLAYLIST_FALLBACK: boolean(true),
     SPOTIFY_CLIENT_ID: optionalText,
     SPOTIFY_CLIENT_SECRET: optionalSecret,
     SPOTIFY_REFRESH_TOKEN: optionalSecret,

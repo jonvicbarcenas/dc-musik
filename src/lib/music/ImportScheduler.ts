@@ -12,6 +12,7 @@ export interface ImportHooks {
     processedCount: number,
     name: string,
     total: number | null,
+    notice?: string,
   ): Promise<boolean>;
   complete(jobId: string, failed: boolean, failure?: MusicError): Promise<void>;
 }
@@ -42,7 +43,9 @@ export class ImportScheduler {
             const items = page.items.slice(skip);
             if (!items.length) continue;
             controller.signal.throwIfAborted();
-            if (!(await hooks.append(job.id, items, processed, page.name, page.total))) {
+            if (
+              !(await hooks.append(job.id, items, processed, page.name, page.total, page.notice))
+            ) {
               await hooks.complete(job.id, false);
               return;
             }
@@ -76,9 +79,11 @@ export class ImportScheduler {
 export async function collectCatalog(
   pages: AsyncIterable<CatalogPage>,
   maximum: number,
+  onNotice?: (message: string) => Promise<void>,
 ): Promise<ResolvedItem[]> {
   const items: ResolvedItem[] = [];
   for await (const page of pages) {
+    if (page.notice) await onNotice?.(page.notice);
     items.push(...page.items.slice(0, maximum - items.length));
     if (items.length >= maximum) break;
   }

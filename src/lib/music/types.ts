@@ -8,6 +8,7 @@ export interface CatalogPage {
   name: string;
   items: ResolvedItem[];
   total: number | null;
+  notice?: string;
 }
 export interface RawTrack {
   encoded: string | null;

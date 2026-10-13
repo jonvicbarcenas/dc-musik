@@ -91,10 +91,11 @@ secret in `.env`, then recreate Lavalink and restart the bot. Spotify catalog en
 are matched to full tracks through the existing mirroring engine. Direct Spotify
 audio and preview clips do not enter the queue.
 
-Spotify playlist reading additionally needs an authorized account. The configured
-application credentials can read song metadata, but do not identify a playlist
-owner. Spotify's [current playlist API](https://developer.spotify.com/documentation/web-api/reference/get-playlists-items)
-restricts contents to the authorized owner or collaborator. To configure this:
+Spotify's [new playlist API](https://developer.spotify.com/documentation/web-api/reference/get-playlists-items)
+restricts contents to the authorized owner or collaborator. Access differs for
+older and extended-quota applications; this bot uses the new endpoint. The configured
+application credentials can read public playlist metadata, but do not identify an
+owner. To configure account authorization for full API imports:
 
 1. Open the application's Settings in the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard).
    Add and save the exact Redirect URI `http://127.0.0.1:8888/callback`. An alternative
@@ -118,15 +119,33 @@ For Development Mode, the Spotify application owner needs Premium and the sign-i
 account must have access to the app. Check the application's User Management if an
 account is rejected. See [Spotify's developer access requirements](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide).
 The bot accepts public playlists only: the operator's private libraries are not
-exposed to other Discord users. Playlists from other people require collaborator
-access, or an owned public copy. Spotify can still restrict app/account access.
+exposed to other Discord users. Full API imports of other people's playlists need
+collaborator access or an owned public copy. Spotify can still restrict app/account
+access.
+
+`SPOTIFY_PUBLIC_PLAYLIST_FALLBACK=true` enables an experimental fallback for other
+public playlists when the first items request is denied. The API must first confirm
+`public: true`; false/unknown visibility is blocked. The bot reads the unsigned
+Spotify embed page, validates its playlist identity and imports up to 100 visible
+track entries. It uses only title, artist, canonical track URL and full duration;
+embedded tokens, cookies and audio previews are ignored. Playback still uses the
+existing full-track mirror matching. This source is not a documented metadata API
+and may omit tracks or change layout. Spotify's [Developer Terms](https://developer.spotify.com/terms#section-iv-restrictions)
+restrict unauthorized automated retrieval, including playlist data.
+
+Queue and personal-library imports show an incomplete-source notice and keep the
+full playlist total unknown. Only parsed metadata is cached for fifteen minutes,
+with a bounded cache. A blocked/rate-limited page is not retried or worked around.
+Fallback never switches sources after a successful API page, so later errors cannot
+duplicate an import. Set the variable to `false` to require the API path exclusively.
+Public metadata confirmation still needs working Spotify application credentials.
 
 Authorization uses PKCE and a random verified callback state, a loopback-only
 listener and a fifteen-minute timeout. Refresh credentials rotate atomically under
 the database's data directory, with private file permissions and a short file lease
 shared by bot accounts/shards. These files contain credentials; keep the data
 directory private. A revoked or expired authorization returns a sign-in instruction
-instead of falling back to a second source and hiding the access failure. Failed
+when public visibility cannot be verified. Failed
 first-page imports report their authored reason once, and partial imports retain
 already queued songs. The compiled helper is `node dist/scripts/spotify-auth.js`.
 For the container bot, run authorization on the host and recreate the bot after
@@ -328,7 +347,7 @@ Local checks cover controller actions, stale playback races, expired/actor-bound
 menus, DM pagination, help permission changes, embed bounds, timed lyrics, health
 HTTP, serialized edits, event draining, natural completion, kicks, account selection,
 shard session ownership, concurrent restoration, cancelled startup, and readiness.
-All **230 local checks** pass: 50 engine checks, 92 command checks, and 88 runtime/UI/
+All **249 local checks** pass: 51 engine checks, 92 command checks, and 106 runtime/UI/
 authorization checks including safe startup diagnostics. Temporary checks are under ignored
 `data/phase-6-verification`; Phase 7 promotes them into the permanent test suite.
 
@@ -339,6 +358,18 @@ timestamp sorting/grouping, embed bounds, stale lyric fetches, clean mode, priva
 slash webhook expiry and shutdown. These checks use fixture lyrics and Discord
 message doubles; a live provider and audible Discord playback still need trying
 with `/lyrics` in the deployed bot.
+
+Eighteen public-playlist checks cover metadata-only parsing, omitted previews/auth
+state, the visible-entry cap, malformed/login pages, playlist identity, API preference,
+private/unknown visibility, opt-out, source denial/rate limits, temporary caching,
+cancellation and personal-library warnings. An engine regression verifies the
+incomplete-source notice is delivered once without changing queue order. The
+production catalog path also imported 84 visible entries from public playlist
+`4i7Aahy42GS7ycM9nHO3pr` in pages of 5, 50 and 29, with one warning and an unknown
+full total. That read-only probe used application credentials, did not refresh user
+credentials, did not request audio and did not connect Discord voice. It verifies
+the public metadata fallback, not completeness of the full playlist or availability
+of every mirrored song.
 
 An actual local Lavalink 4.2.2 with all four configured plugins passed initial event
 readiness, session initialization, authenticated WAV loading, a real process restart,

@@ -231,6 +231,7 @@ const command = defineCommand({
                 context.signal,
               ),
               context.services.env.MAX_PLAYLIST_IMPORT,
+              (message) => context.notice(message, 'Playlist import', 'warning'),
             ),
           context.signal,
         );

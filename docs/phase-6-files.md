@@ -1,6 +1,6 @@
 # Phase 6 — Complete source files
 
-All 69 added or updated production files are reproduced in full, including the runtime guide. Temporary verification fixtures under ignored data/ remain reserved for the permanent test phase.
+All 72 added or updated production files are reproduced in full, including the runtime guide. Temporary verification fixtures under ignored data/ remain reserved for the permanent test phase.
 
 ## C:/Users/USER/OneDrive/Documents/ChatGPT/discord-music-stream/src/index.ts
 
@@ -4437,7 +4437,7 @@ export class PlayerManager extends EventEmitter<EngineEvents> {
     this.imports.start(
       structuredClone(job),
       {
-        append: (id, items, processed, name, total) =>
+        append: (id, items, processed, name, total, notice) =>
           this.locked(session, async () => {
             if (session.closed) return false;
             const active = session.state.pendingImports.find((pending) => pending.id === id);
@@ -4494,6 +4494,7 @@ export class PlayerManager extends EventEmitter<EngineEvents> {
             }
             await this.persist(session);
             if (waiter && waiter.count >= 5 && !waiter.settled) this.settleImport(id, waiter, true);
+            if (notice) this.emit('notice', session.state.guildId, notice);
             this.emit(
               'importProgress',
               session.state.guildId,
@@ -5283,6 +5284,184 @@ export function isPreviewRequest(title: string, uri: string | null): boolean {
 }
 ````
 
+## C:/Users/USER/OneDrive/Documents/ChatGPT/discord-music-stream/src/lib/music/SpotifyPublicPlaylist.ts
+
+````typescript
+import { z } from 'zod';
+import type { RawTrack } from './types.js';
+import { SafeHttpClient } from '../security/SafeHttpClient.js';
+
+const trackSchema = z.object({
+  uri: z.string().regex(/^spotify:track:[A-Za-z0-9]{22}$/),
+  title: z.string().trim().min(1).max(1000),
+  subtitle: z.string().trim().min(1).max(1000),
+  duration: z.number().int().positive().max(86_400_000),
+  entityType: z.literal('track'),
+});
+const entitySchema = z.object({
+  type: z.literal('playlist'),
+  uri: z.string(),
+  title: z.string().trim().min(1).max(1000),
+  trackList: z.array(z.unknown()).max(5000),
+});
+export interface PublicPlaylist {
+  name: string;
+  tracks: RawTrack[];
+}
+
+/** Only the unsigned, publicly rendered widget. Ignore preview URLs and all auth state. */
+export class SpotifyPublicPlaylist {
+  private readonly cache = new Map<string, { expiresAt: number; value: PublicPlaylist }>();
+  constructor(private readonly http = new SafeHttpClient()) {}
+
+  async get(id: string, signal?: AbortSignal): Promise<PublicPlaylist | null> {
+    if (!/^[A-Za-z0-9]{22}$/.test(id)) return null;
+    signal?.throwIfAborted();
+    const cached = this.cache.get(id);
+    if (cached && cached.expiresAt > Date.now()) return cached.value;
+    try {
+      const response = await this.http.request(`https://open.spotify.com/embed/playlist/${id}`, {
+        allowedOrigin: 'https://open.spotify.com',
+        redirects: 0,
+        maxBytes: 2_000_000,
+        timeoutMs: 15_000,
+        ...(signal ? { signal } : {}),
+      });
+      signal?.throwIfAborted();
+      if (response.status !== 200) return null;
+      const value = parsePublicPlaylist(response.body.toString('utf8'), id);
+      if (!value?.tracks.length) return null;
+      this.cache.delete(id);
+      while (this.cache.size >= 128) {
+        const oldest = this.cache.keys().next().value;
+        if (oldest) this.cache.delete(oldest);
+      }
+      this.cache.set(id, { expiresAt: Date.now() + 15 * 60_000, value });
+      return value;
+    } catch {
+      signal?.throwIfAborted();
+      return null;
+    }
+  }
+}
+
+export function parsePublicPlaylist(html: string, id: string): PublicPlaylist | null {
+  if (html.length > 2_000_000 || !/^[A-Za-z0-9]{22}$/.test(id)) return null;
+  const script = /<script\b(?=[^>]*\bid=["']__NEXT_DATA__["'])[^>]*>([\s\S]*?)<\/script>/i.exec(
+    html,
+  )?.[1];
+  if (!script) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(script) as unknown;
+  } catch {
+    return null;
+  }
+  const object = (input: unknown): Record<string, unknown> =>
+    typeof input === 'object' && input !== null && !Array.isArray(input)
+      ? (input as Record<string, unknown>)
+      : {};
+  const props = object(object(value)['props']);
+  const state = object(object(props['pageProps'])['state']);
+  const parsed = entitySchema.safeParse(object(state['data'])['entity']);
+  if (!parsed.success || parsed.data.uri !== `spotify:playlist:${id}`) return null;
+  const tracks: RawTrack[] = [];
+  for (const input of parsed.data.trackList.slice(0, 100)) {
+    const parsedTrack = trackSchema.safeParse(input);
+    if (!parsedTrack.success) continue;
+    const track = parsedTrack.data;
+    const identifier = track.uri.slice('spotify:track:'.length);
+    tracks.push({
+      encoded: null,
+      identifier,
+      title: track.title.slice(0, 500),
+      artist: track.subtitle.slice(0, 500),
+      source: 'spotify',
+      uri: `https://open.spotify.com/track/${identifier}`,
+      durationMs: track.duration,
+      isStream: false,
+      isSeekable: true,
+      artworkUrl: null,
+      isrc: null,
+      album: null,
+      isPreview: false,
+    });
+  }
+  return { name: parsed.data.title.slice(0, 300), tracks };
+}
+````
+
+## C:/Users/USER/OneDrive/Documents/ChatGPT/discord-music-stream/src/lib/music/types.ts
+
+````typescript
+import type { AudioFilters, PlayableTrack, QueueSnapshot, StoredTrack } from '../db/models.js';
+
+export interface ResolvedItem {
+  track: StoredTrack;
+  playable: PlayableTrack | null;
+}
+export interface CatalogPage {
+  name: string;
+  items: ResolvedItem[];
+  total: number | null;
+  notice?: string;
+}
+export interface RawTrack {
+  encoded: string | null;
+  identifier: string;
+  title: string;
+  artist: string;
+  source: string;
+  uri: string | null;
+  durationMs: number;
+  isStream: boolean;
+  isSeekable: boolean;
+  artworkUrl: string | null;
+  isrc: string | null;
+  album: string | null;
+  isPreview: boolean;
+}
+export interface LoadResult {
+  kind: 'track' | 'playlist' | 'search' | 'empty';
+  name: string;
+  tracks: RawTrack[];
+}
+export interface PlaybackOptions {
+  playbackId: string;
+  positionMs: number;
+  paused: boolean;
+  volume: number;
+  filters: AudioFilters;
+}
+export interface NodeIdentity {
+  nodeId: string | null;
+  sessionId: string | null;
+}
+/** Commands never reach directly into the Lavalink SDK's internal queue. */
+export interface AudioTransport {
+  load(identifier: string, nodeId?: string | null): Promise<LoadResult>;
+  connect(snapshot: QueueSnapshot): Promise<NodeIdentity>;
+  play(guildId: string, track: PlayableTrack, options: PlaybackOptions): Promise<void>;
+  stop(guildId: string): Promise<void>;
+  destroy(guildId: string): Promise<void>;
+  pause(guildId: string, paused: boolean): Promise<void>;
+  seek(guildId: string, positionMs: number): Promise<void>;
+  volume(guildId: string, volume: number): Promise<void>;
+  filters(guildId: string, filters: AudioFilters): Promise<void>;
+  sponsorBlock(guildId: string, enabled: boolean): Promise<void>;
+  identity(guildId: string): NodeIdentity;
+  position(guildId: string): number | null;
+  migrate(guildId: string, excludedNodeId: string): Promise<NodeIdentity | null>;
+}
+export interface TrackEvent {
+  guildId: string;
+  playbackId: string | null;
+  encoded: string | null;
+  type: 'start' | 'end' | 'error' | 'stuck';
+  reason: string | null;
+}
+````
+
 ## C:/Users/USER/OneDrive/Documents/ChatGPT/discord-music-stream/src/lib/security/MediaBridge.ts
 
 ````typescript
@@ -5687,6 +5866,289 @@ const command = defineCommand({
       throw new CommandError('ARGUMENT', 'The track changed. Run lyrics again.');
     if (!lyrics) throw new CommandError('ARGUMENT', 'Lyrics are unavailable for this track.');
     await context.present({ kind: 'lyrics', track: current.track, lyrics });
+  },
+});
+export const { slash, aliases, execute } = command;
+export default command;
+````
+
+## C:/Users/USER/OneDrive/Documents/ChatGPT/discord-music-stream/src/commands/extras/playlists.ts
+
+````typescript
+import { arg, defineCommand } from '../../framework/Command.js';
+import type { CommandContext } from '../../framework/CommandContext.js';
+import type { CommandView } from '../../framework/CommandUI.js';
+import { CommandError } from '../../framework/errors.js';
+import { shareTokenSchema } from '../../lib/db/models.js';
+import type { PersonalPlaylist, StoredTrack } from '../../lib/db/models.js';
+import { collectCatalog } from '../../lib/music/ImportScheduler.js';
+import { parsePositions } from '../../lib/utils/positions.js';
+import { joinPolicy, mapPage } from '../common.js';
+
+const playlistArg = () =>
+  arg.text('playlist', 'Playlist name, ID, or read-only share token', true, false, 64);
+async function owned(context: CommandContext, name: string): Promise<PersonalPlaylist> {
+  const playlist = await context.services.repositories.playlists.findOwned(context.user.id, name);
+  if (!playlist)
+    throw new CommandError('ARGUMENT', 'That playlist was not found or does not belong to you.');
+  return playlist;
+}
+export async function playlistsPage(context: CommandContext, page: number): Promise<CommandView> {
+  await context.recheck({});
+  const result = await context.services.repositories.playlists.list(context.user.id, {
+    page,
+    pageSize: 10,
+  });
+  return {
+    kind: 'list',
+    title: 'Your playlists',
+    page: mapPage(
+      result,
+      (playlist) => `${context.safeName(playlist.name)}${playlist.isShared ? ' · Shared' : ''}`,
+    ),
+    onPage: playlistsPage,
+  };
+}
+async function playlistPage(
+  context: CommandContext,
+  name: string,
+  page: number,
+): Promise<CommandView> {
+  await context.recheck({});
+  const repository = context.services.repositories.playlists;
+  const playlist = await repository.findOwned(context.user.id, name);
+  const result = playlist
+    ? await repository.viewOwned(context.user.id, playlist.id, { page, pageSize: 10 })
+    : shareTokenSchema.safeParse(name).success
+      ? await repository.viewShared(name, { page, pageSize: 10 })
+      : null;
+  if (!result)
+    throw new CommandError(
+      'ARGUMENT',
+      'Playlist not found. Use its quoted name, ID, or share token.',
+    );
+  return {
+    kind: 'tracks',
+    title: result.playlist.name,
+    page: mapPage(result.tracks, (entry) => entry.track),
+    onPage: (fresh, next) => playlistPage(fresh, name, next),
+  };
+}
+async function tracksForPlayback(context: CommandContext, name: string): Promise<StoredTrack[]> {
+  const repository = context.services.repositories.playlists;
+  const playlist = await repository.findOwned(context.user.id, name);
+  if (playlist) return repository.tracksOwned(context.user.id, playlist.id);
+  if (shareTokenSchema.safeParse(name).success) return repository.tracksShared(name);
+  throw new CommandError(
+    'ARGUMENT',
+    'Playlist not found. Use its quoted name, ID, or share token.',
+  );
+}
+
+const command = defineCommand({
+  name: 'playlists',
+  description: 'Create, edit, import, play, and share personal playlists',
+  category: 'extras',
+  aliases: ['playlist', 'pl'],
+  ephemeral: true,
+  prefixDefault: 'list',
+  policy: (args) => (args.subcommand === 'play' ? joinPolicy : {}),
+  subcommands: [
+    {
+      name: 'create',
+      description: 'Create a private playlist',
+      arguments: [arg.text('name', 'Playlist name', true, true, 64)],
+    },
+    { name: 'delete', description: 'Delete your playlist', arguments: [playlistArg()] },
+    {
+      name: 'add',
+      description: 'Add the current track, queue:N, or a song/link',
+      arguments: [
+        playlistArg(),
+        arg.text('query', 'Current, queue:N, or song/link; omit for current', false, true),
+      ],
+    },
+    {
+      name: 'remove',
+      description: 'Remove playlist positions or ranges',
+      arguments: [
+        playlistArg(),
+        arg.text('positions', 'Positions such as 2 or 3-5', true, true, 1000),
+      ],
+    },
+    {
+      name: 'view',
+      description: 'Browse an owned or shared playlist',
+      arguments: [playlistArg(), arg.integer('page', 'Page number', false, 1, 1000000)],
+    },
+    {
+      name: 'list',
+      description: 'Browse your playlist names',
+      arguments: [arg.integer('page', 'Page number', false, 1, 1000000)],
+    },
+    {
+      name: 'play',
+      description: 'Queue an owned playlist or read-only share token',
+      arguments: [playlistArg()],
+    },
+    {
+      name: 'import',
+      description: 'Append metadata from a Spotify or YouTube collection',
+      arguments: [playlistArg(), arg.text('query', 'Public Spotify or YouTube link', true, true)],
+    },
+    {
+      name: 'share',
+      description: 'Create a private read token or revoke sharing',
+      arguments: [
+        playlistArg(),
+        arg.boolean('enabled', 'Enable or revoke read-only sharing', false),
+      ],
+    },
+  ],
+  execute: async (context) => {
+    const repository = context.services.repositories.playlists;
+    switch (context.args.subcommand) {
+      case 'create': {
+        const playlist = await repository.create(context.user.id, context.args.text('name'));
+        await context.notice(`Created ${context.safeName(playlist.name)}.`);
+        return;
+      }
+      case 'delete': {
+        const playlist = await owned(context, context.args.text('playlist'));
+        await repository.delete(context.user.id, playlist.id);
+        await context.notice(`Deleted ${context.safeName(playlist.name)}.`);
+        return;
+      }
+      case 'add': {
+        const playlist = await owned(context, context.args.text('playlist'));
+        const query = context.args.text('query', 'current');
+        let track: StoredTrack | null = null;
+        if (query.toLowerCase() === 'current') track = context.current().track;
+        else if (/^queue:\d+$/i.test(query)) {
+          const position = Number(query.split(':')[1]);
+          track = context.requireSnapshot().upcoming[position - 1]?.track ?? null;
+        } else {
+          await context.services.catalogWork.run(async () => {
+            for await (const page of context.services.players.resolver.pages(
+              query,
+              1,
+              context.signal,
+            )) {
+              track = page.items[0]?.track ?? null;
+              break;
+            }
+          }, context.signal);
+        }
+        if (!track)
+          throw new CommandError('ARGUMENT', 'That song or queue position was not found.');
+        const total = await repository.append(context.user.id, playlist.id, [track]);
+        await context.notice(
+          `Added one track to ${context.safeName(playlist.name)} (${total} total).`,
+        );
+        return;
+      }
+      case 'remove': {
+        const playlist = await owned(context, context.args.text('playlist'));
+        const tracks = await repository.tracksOwned(context.user.id, playlist.id);
+        const removed = await repository.remove(
+          context.user.id,
+          playlist.id,
+          parsePositions(context.args.text('positions'), tracks.length),
+        );
+        await context.notice(`Removed ${removed} playlist track(s).`);
+        return;
+      }
+      case 'play': {
+        const tracks = await tracksForPlayback(context, context.args.text('playlist'));
+        if (!tracks.length)
+          throw new CommandError('ARGUMENT', 'This playlist is empty. Add or import songs first.');
+        await context.joinPlayer();
+        await context.services.players.enqueue(
+          context.guildId,
+          tracks.map((track) => ({ track, playable: null })),
+          context.requester,
+        );
+        await context.present({
+          kind: 'added',
+          tracks: tracks.slice(0, 5),
+          count: tracks.length,
+          total: tracks.length,
+          name: 'Personal playlist',
+          background: false,
+          mode: 'append',
+        });
+        return;
+      }
+      case 'import': {
+        const playlist = await owned(context, context.args.text('playlist'));
+        const query = context.args.text('query');
+        let url: URL;
+        try {
+          url = new URL(query);
+        } catch {
+          throw new CommandError('ARGUMENT', 'Import a public Spotify or YouTube link.');
+        }
+        if (
+          ![
+            'open.spotify.com',
+            'youtube.com',
+            'www.youtube.com',
+            'music.youtube.com',
+            'm.youtube.com',
+            'youtu.be',
+          ].includes(url.hostname)
+        )
+          throw new CommandError('ARGUMENT', 'Import a public Spotify or YouTube link.');
+        const items = await context.services.catalogWork.run(
+          () =>
+            collectCatalog(
+              context.services.players.resolver.pages(
+                query,
+                context.services.env.MAX_PLAYLIST_IMPORT,
+                context.signal,
+              ),
+              context.services.env.MAX_PLAYLIST_IMPORT,
+              (message) => context.notice(message, 'Playlist import', 'warning'),
+            ),
+          context.signal,
+        );
+        if (!items.length) throw new CommandError('ARGUMENT', 'No tracks could be imported.');
+        const total = await repository.append(
+          context.user.id,
+          playlist.id,
+          items.map((item) => item.track),
+        );
+        await context.notice(
+          `Imported ${items.length} track(s) into ${context.safeName(playlist.name)} (${total} total).`,
+        );
+        return;
+      }
+      case 'share': {
+        const playlist = await owned(context, context.args.text('playlist'));
+        const enabled = context.args.boolean('enabled', true);
+        const shared = await repository.setShared(context.user.id, playlist.id, enabled);
+        if (!enabled) {
+          await context.notice('Sharing disabled. The old token no longer works.');
+          return;
+        }
+        if (!shared.shareToken) throw new Error('Missing share token.');
+        await context.privateText(
+          `Read-only share token for ${context.safeName(playlist.name)}: \`${shared.shareToken}\`\nUse /playlists view or /playlists play with this token as the playlist. Anyone with the token can read it. Disable sharing to revoke it.`,
+        );
+        return;
+      }
+      case 'view':
+        await context.present(
+          await playlistPage(
+            context,
+            context.args.text('playlist'),
+            context.args.number('page', 1),
+          ),
+        );
+        return;
+      default:
+        await context.present(await playlistsPage(context, context.args.number('page', 1)));
+    }
   },
 });
 export const { slash, aliases, execute } = command;
@@ -6275,6 +6737,8 @@ MEDIA_REQUEST_TIMEOUT_MS=30000
 # Booleans use true/false. Sources requiring credentials remain disabled until configured.
 SOURCE_COUNTRY_CODE=PH
 SPOTIFY_ENABLED=false
+# Experimental public-widget metadata fallback; capped at 100 visible entries, possibly incomplete.
+SPOTIFY_PUBLIC_PLAYLIST_FALLBACK=true
 SPOTIFY_CLIENT_ID=
 SPOTIFY_CLIENT_SECRET=
 # For public playlists owned by / shared with the operator, authorize with npm run spotify:auth.
@@ -6510,6 +6974,7 @@ const envSchema = z
       .regex(/^[A-Z]{2}$/)
       .default('PH'),
     SPOTIFY_ENABLED: boolean(false),
+    SPOTIFY_PUBLIC_PLAYLIST_FALLBACK: boolean(true),
     SPOTIFY_CLIENT_ID: optionalText,
     SPOTIFY_CLIENT_SECRET: optionalSecret,
     SPOTIFY_REFRESH_TOKEN: optionalSecret,
@@ -6983,6 +7448,7 @@ async function main(): Promise<void> {
     REDIS_URL: '',
     SOURCE_COUNTRY_CODE: env.SOURCE_COUNTRY_CODE,
     SPOTIFY_ENABLED: String(env.SPOTIFY_ENABLED),
+    SPOTIFY_PUBLIC_PLAYLIST_FALLBACK: String(env.SPOTIFY_PUBLIC_PLAYLIST_FALLBACK),
     SPOTIFY_CLIENT_ID: env.SPOTIFY_CLIENT_ID ?? '',
     SPOTIFY_CLIENT_SECRET: env.SPOTIFY_CLIENT_SECRET ?? '',
     SPOTIFY_REFRESH_TOKEN:
@@ -7543,6 +8009,7 @@ import { MusicError } from '../utils/errors.js';
 import type { CatalogPage, RawTrack } from './types.js';
 import { toResolvedItem } from './TrackCodec.js';
 import { SpotifyUserAuth, spotifySignInRequired } from './SpotifyUserAuth.js';
+import { SpotifyPublicPlaylist } from './SpotifyPublicPlaylist.js';
 
 export function object(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -7564,15 +8031,19 @@ export class CatalogClient {
   private token: { value: string; expiresAt: number } | null = null;
   private readonly tokenLock = new AsyncLock();
   private readonly userAuth: SpotifyUserAuth;
+  private readonly publicPlaylist: SpotifyPublicPlaylist;
   constructor(
     private readonly env: Pick<
       Env,
       'SPOTIFY_ENABLED' | 'SPOTIFY_CLIENT_ID' | 'SPOTIFY_CLIENT_SECRET' | 'SOURCE_COUNTRY_CODE'
     > &
-      Partial<Pick<Env, 'SPOTIFY_REFRESH_TOKEN' | 'DATABASE_PATH'>>,
+      Partial<
+        Pick<Env, 'SPOTIFY_REFRESH_TOKEN' | 'DATABASE_PATH' | 'SPOTIFY_PUBLIC_PLAYLIST_FALLBACK'>
+      >,
     private readonly http = new SafeHttpClient(),
   ) {
     this.userAuth = new SpotifyUserAuth(env, http);
+    this.publicPlaylist = new SpotifyPublicPlaylist(http);
   }
 
   supports(url: URL): boolean {
@@ -7680,7 +8151,11 @@ export class CatalogClient {
     const root = `https://api.spotify.com/v1/${kind}s/${id}`;
     const market = this.env.SOURCE_COUNTRY_CODE;
     let playlistName = `Spotify ${kind}`;
-    if (kind === 'playlist' && this.env.SPOTIFY_REFRESH_TOKEN) {
+    let publicPlaylist = false;
+    if (
+      kind === 'playlist' &&
+      (this.env.SPOTIFY_REFRESH_TOKEN || this.env.SPOTIFY_PUBLIC_PLAYLIST_FALLBACK !== false)
+    ) {
       const playlist = object(await this.spotifyRequest(root, signal));
       // The operator's authorization is shared by the bot; never disclose their private libraries.
       if (playlist['public'] !== true)
@@ -7689,6 +8164,7 @@ export class CatalogClient {
           'Only public Spotify playlists can be imported. Make this playlist public and sign in with its owner or a collaborator.',
         );
       playlistName = string(playlist['name']) || playlistName;
+      publicPlaylist = true;
     }
     if (kind === 'track' || kind === 'artist') {
       const response = await this.spotifyRequest(
@@ -7707,12 +8183,51 @@ export class CatalogClient {
     while (offset < limit) {
       const size = Math.min(offset === 0 ? 5 : 50, limit - offset);
       const suffix = kind === 'playlist' ? 'items' : 'tracks';
-      const response = object(
-        await this.spotifyRequest(
-          `${root}/${suffix}?limit=${size}&offset=${offset}&market=${market}`,
-          signal,
-        ),
-      );
+      let response: Record<string, unknown>;
+      try {
+        response = object(
+          await this.spotifyRequest(
+            `${root}/${suffix}?limit=${size}&offset=${offset}&market=${market}`,
+            signal,
+          ),
+        );
+      } catch (error) {
+        if (
+          kind !== 'playlist' ||
+          offset !== 0 ||
+          !publicPlaylist ||
+          this.env.SPOTIFY_PUBLIC_PLAYLIST_FALLBACK === false ||
+          !(error instanceof MusicError) ||
+          !['SPOTIFY_AUTH_REQUIRED', 'SPOTIFY_ACCESS_DENIED'].includes(error.code)
+        )
+          throw error;
+        signal?.throwIfAborted();
+        const rendered = await this.publicPlaylist.get(id, signal);
+        if (!rendered) throw error;
+        const items = rendered.tracks.slice(0, limit).flatMap((track) => {
+          try {
+            return [toResolvedItem(track)];
+          } catch {
+            return [];
+          }
+        });
+        if (!items.length) throw error;
+        for (let index = 0; index < items.length; index += index === 0 ? 5 : 50) {
+          signal?.throwIfAborted();
+          yield {
+            name: rendered.name || playlistName,
+            items: items.slice(index, index + (index === 0 ? 5 : 50)),
+            total: null,
+            ...(index === 0
+              ? {
+                  notice:
+                    'Imported from Spotify’s public playlist view (up to 100 tracks). Longer playlists may be incomplete; the full playlist was not verified.',
+                }
+              : {}),
+          };
+        }
+        return;
+      }
       const records = array(response['items']);
       if (!records.length) return;
       yield {
@@ -8244,6 +8759,7 @@ export interface ImportHooks {
     processedCount: number,
     name: string,
     total: number | null,
+    notice?: string,
   ): Promise<boolean>;
   complete(jobId: string, failed: boolean, failure?: MusicError): Promise<void>;
 }
@@ -8274,7 +8790,9 @@ export class ImportScheduler {
             const items = page.items.slice(skip);
             if (!items.length) continue;
             controller.signal.throwIfAborted();
-            if (!(await hooks.append(job.id, items, processed, page.name, page.total))) {
+            if (
+              !(await hooks.append(job.id, items, processed, page.name, page.total, page.notice))
+            ) {
               await hooks.complete(job.id, false);
               return;
             }
@@ -8308,9 +8826,11 @@ export class ImportScheduler {
 export async function collectCatalog(
   pages: AsyncIterable<CatalogPage>,
   maximum: number,
+  onNotice?: (message: string) => Promise<void>,
 ): Promise<ResolvedItem[]> {
   const items: ResolvedItem[] = [];
   for await (const page of pages) {
+    if (page.notice) await onNotice?.(page.notice);
     items.push(...page.items.slice(0, maximum - items.length));
     if (items.length >= maximum) break;
   }
@@ -8573,10 +9093,11 @@ secret in `.env`, then recreate Lavalink and restart the bot. Spotify catalog en
 are matched to full tracks through the existing mirroring engine. Direct Spotify
 audio and preview clips do not enter the queue.
 
-Spotify playlist reading additionally needs an authorized account. The configured
-application credentials can read song metadata, but do not identify a playlist
-owner. Spotify's [current playlist API](https://developer.spotify.com/documentation/web-api/reference/get-playlists-items)
-restricts contents to the authorized owner or collaborator. To configure this:
+Spotify's [new playlist API](https://developer.spotify.com/documentation/web-api/reference/get-playlists-items)
+restricts contents to the authorized owner or collaborator. Access differs for
+older and extended-quota applications; this bot uses the new endpoint. The configured
+application credentials can read public playlist metadata, but do not identify an
+owner. To configure account authorization for full API imports:
 
 1. Open the application's Settings in the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard).
    Add and save the exact Redirect URI `http://127.0.0.1:8888/callback`. An alternative
@@ -8600,15 +9121,33 @@ For Development Mode, the Spotify application owner needs Premium and the sign-i
 account must have access to the app. Check the application's User Management if an
 account is rejected. See [Spotify's developer access requirements](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide).
 The bot accepts public playlists only: the operator's private libraries are not
-exposed to other Discord users. Playlists from other people require collaborator
-access, or an owned public copy. Spotify can still restrict app/account access.
+exposed to other Discord users. Full API imports of other people's playlists need
+collaborator access or an owned public copy. Spotify can still restrict app/account
+access.
+
+`SPOTIFY_PUBLIC_PLAYLIST_FALLBACK=true` enables an experimental fallback for other
+public playlists when the first items request is denied. The API must first confirm
+`public: true`; false/unknown visibility is blocked. The bot reads the unsigned
+Spotify embed page, validates its playlist identity and imports up to 100 visible
+track entries. It uses only title, artist, canonical track URL and full duration;
+embedded tokens, cookies and audio previews are ignored. Playback still uses the
+existing full-track mirror matching. This source is not a documented metadata API
+and may omit tracks or change layout. Spotify's [Developer Terms](https://developer.spotify.com/terms#section-iv-restrictions)
+restrict unauthorized automated retrieval, including playlist data.
+
+Queue and personal-library imports show an incomplete-source notice and keep the
+full playlist total unknown. Only parsed metadata is cached for fifteen minutes,
+with a bounded cache. A blocked/rate-limited page is not retried or worked around.
+Fallback never switches sources after a successful API page, so later errors cannot
+duplicate an import. Set the variable to `false` to require the API path exclusively.
+Public metadata confirmation still needs working Spotify application credentials.
 
 Authorization uses PKCE and a random verified callback state, a loopback-only
 listener and a fifteen-minute timeout. Refresh credentials rotate atomically under
 the database's data directory, with private file permissions and a short file lease
 shared by bot accounts/shards. These files contain credentials; keep the data
 directory private. A revoked or expired authorization returns a sign-in instruction
-instead of falling back to a second source and hiding the access failure. Failed
+when public visibility cannot be verified. Failed
 first-page imports report their authored reason once, and partial imports retain
 already queued songs. The compiled helper is `node dist/scripts/spotify-auth.js`.
 For the container bot, run authorization on the host and recreate the bot after
@@ -8810,7 +9349,7 @@ Local checks cover controller actions, stale playback races, expired/actor-bound
 menus, DM pagination, help permission changes, embed bounds, timed lyrics, health
 HTTP, serialized edits, event draining, natural completion, kicks, account selection,
 shard session ownership, concurrent restoration, cancelled startup, and readiness.
-All **230 local checks** pass: 50 engine checks, 92 command checks, and 88 runtime/UI/
+All **249 local checks** pass: 51 engine checks, 92 command checks, and 106 runtime/UI/
 authorization checks including safe startup diagnostics. Temporary checks are under ignored
 `data/phase-6-verification`; Phase 7 promotes them into the permanent test suite.
 
@@ -8821,6 +9360,18 @@ timestamp sorting/grouping, embed bounds, stale lyric fetches, clean mode, priva
 slash webhook expiry and shutdown. These checks use fixture lyrics and Discord
 message doubles; a live provider and audible Discord playback still need trying
 with `/lyrics` in the deployed bot.
+
+Eighteen public-playlist checks cover metadata-only parsing, omitted previews/auth
+state, the visible-entry cap, malformed/login pages, playlist identity, API preference,
+private/unknown visibility, opt-out, source denial/rate limits, temporary caching,
+cancellation and personal-library warnings. An engine regression verifies the
+incomplete-source notice is delivered once without changing queue order. The
+production catalog path also imported 84 visible entries from public playlist
+`4i7Aahy42GS7ycM9nHO3pr` in pages of 5, 50 and 29, with one warning and an unknown
+full total. That read-only probe used application credentials, did not refresh user
+credentials, did not request audio and did not connect Discord voice. It verifies
+the public metadata fallback, not completeness of the full playlist or availability
+of every mirrored song.
 
 An actual local Lavalink 4.2.2 with all four configured plugins passed initial event
 readiness, session initialization, authenticated WAV loading, a real process restart,
@@ -9022,8 +9573,14 @@ if access changes. The Spotify helper uses a local callback and runs on your
 computer. Lavalink source access can differ on a cloud IP; a failed track still
 requires checking the source's actual error privately.
 
-Spotify playlist contents require an authorized owner/collaborator even when the
-playlist is public. [Spotify documents this restriction](https://developer.spotify.com/documentation/web-api/reference/get-playlists-items).
+Full imports through Spotify's new playlist API require an authorized owner or
+collaborator even for public playlists. [Spotify documents this restriction](https://developer.spotify.com/documentation/web-api/reference/get-playlists-items).
+The bot also enables `SPOTIFY_PUBLIC_PLAYLIST_FALLBACK=true` by default. After the
+API confirms a playlist is public, a denied first items request can use the unsigned
+public embed metadata. This imports up to 100 visible entries and warns that the
+full playlist has not been verified. It can change or fail upstream and does not
+handle private playlists. Set this variable to `false` in **bot** Variables to use
+only the API. Spotify's [terms restrict unauthorized automated retrieval](https://developer.spotify.com/terms#section-iv-restrictions).
 
 ## Troubleshooting
 
