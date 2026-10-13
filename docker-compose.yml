@@ -1,0 +1,201 @@
+name: discord-music-stream
+
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      LOG_PRETTY: 'false'
+      LAVALINK_HOST: lavalink
+      LAVALINK_PORT: '2333'
+      LAVALINK_SECURE: 'false'
+      DATABASE_PATH: /app/data/music.sqlite
+      REDIS_URL: '${DOCKER_REDIS_URL:-}'
+      HEALTH_PORT: '3000'
+      MEDIA_BRIDGE_PORT: '3001'
+      MEDIA_BRIDGE_BIND: 0.0.0.0
+      MEDIA_BRIDGE_PUBLIC_URL: http://bot:3001
+    depends_on:
+      lavalink:
+        condition: service_healthy
+    volumes:
+      - bot-data:/app/data
+      - bot-media:/app/media-cache
+    expose:
+      - '3000'
+      - '3001'
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 60s
+    healthcheck:
+      test: ['CMD', 'node', 'dist/scripts/healthcheck.js']
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+      - music
+
+  lavalink:
+    build:
+      context: .
+      dockerfile: lavalink/Dockerfile
+    restart: unless-stopped
+    environment:
+      LAVALINK_PASSWORD: '${LAVALINK_PASSWORD:?Set LAVALINK_PASSWORD in .env}'
+      JAVA_TOOL_OPTIONS: '${LAVALINK_JAVA_OPTIONS:--Xms128m -Xmx512m}'
+      SOURCE_COUNTRY_CODE: '${SOURCE_COUNTRY_CODE:-PH}'
+      SPOTIFY_ENABLED: '${SPOTIFY_ENABLED:-false}'
+      SPOTIFY_CLIENT_ID: '${SPOTIFY_CLIENT_ID:-}'
+      SPOTIFY_CLIENT_SECRET: '${SPOTIFY_CLIENT_SECRET:-}'
+      SPOTIFY_SP_DC: '${SPOTIFY_SP_DC:-}'
+      SPOTIFY_TOKEN_ENDPOINT: '${SPOTIFY_TOKEN_ENDPOINT:-}'
+      APPLE_MUSIC_ENABLED: '${APPLE_MUSIC_ENABLED:-false}'
+      APPLE_MUSIC_TOKEN: '${APPLE_MUSIC_TOKEN:-}'
+      DEEZER_ENABLED: '${DEEZER_ENABLED:-false}'
+      DEEZER_ARL: '${DEEZER_ARL:-}'
+      DEEZER_MASTER_DECRYPTION_KEY: '${DEEZER_MASTER_DECRYPTION_KEY:-}'
+      YANDEX_MUSIC_ENABLED: '${YANDEX_MUSIC_ENABLED:-false}'
+      YANDEX_MUSIC_ACCESS_TOKEN: '${YANDEX_MUSIC_ACCESS_TOKEN:-}'
+      YOUTUBE_OAUTH_ENABLED: '${YOUTUBE_OAUTH_ENABLED:-false}'
+      YOUTUBE_OAUTH_REFRESH_TOKEN: '${YOUTUBE_OAUTH_REFRESH_TOKEN:-}'
+      YOUTUBE_OAUTH_SKIP_INITIALIZATION: '${YOUTUBE_OAUTH_SKIP_INITIALIZATION:-false}'
+      YOUTUBE_CIPHER_URL: '${YOUTUBE_CIPHER_URL:-http://cipher:8001}'
+      YOUTUBE_CIPHER_PASSWORD: '${YOUTUBE_CIPHER_PASSWORD:-${LAVALINK_PASSWORD}}'
+      YOUTUBE_PO_TOKEN: '${YOUTUBE_PO_TOKEN:-}'
+      YOUTUBE_VISITOR_DATA: '${YOUTUBE_VISITOR_DATA:-}'
+      YOUTUBE_PLAYLIST_PAGES: '${YOUTUBE_PLAYLIST_PAGES:-20}'
+      SPOTIFY_PLAYLIST_PAGES: '${SPOTIFY_PLAYLIST_PAGES:-20}'
+      SPOTIFY_ALBUM_PAGES: '${SPOTIFY_ALBUM_PAGES:-40}'
+      APPLE_MUSIC_PLAYLIST_PAGES: '${APPLE_MUSIC_PLAYLIST_PAGES:-7}'
+      APPLE_MUSIC_ALBUM_PAGES: '${APPLE_MUSIC_ALBUM_PAGES:-7}'
+      YANDEX_PLAYLIST_PAGES: '${YANDEX_PLAYLIST_PAGES:-20}'
+      YANDEX_ALBUM_PAGES: '${YANDEX_ALBUM_PAGES:-40}'
+      YANDEX_ARTIST_PAGES: '${YANDEX_ARTIST_PAGES:-10}'
+      YOUTUBE_LYRICS_ENABLED: '${YOUTUBE_LYRICS_ENABLED:-true}'
+      SPOTIFY_LYRICS_ENABLED: '${SPOTIFY_LYRICS_ENABLED:-false}'
+      DEEZER_LYRICS_ENABLED: '${DEEZER_LYRICS_ENABLED:-false}'
+      YANDEX_LYRICS_ENABLED: '${YANDEX_LYRICS_ENABLED:-false}'
+      LAVALINK_SOURCE_SOCKET_TIMEOUT_MS: '${LAVALINK_SOURCE_SOCKET_TIMEOUT_MS:-30000}'
+    depends_on:
+      cipher:
+        condition: service_started
+    volumes:
+      - ./lavalink/application.yml:/opt/Lavalink/application.yml:ro
+      - lavalink-plugins:/opt/Lavalink/plugins
+      - lavalink-logs:/opt/Lavalink/logs
+    ports:
+      - '127.0.0.1:2333:2333'
+    read_only: true
+    tmpfs:
+      # Lavalink extracts its DAVE/Opus native libraries here; they need executable mappings.
+      - /tmp:rw,exec,nosuid,size=256m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 20s
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'curl --fail --silent --show-error --max-time 4 -H "Authorization: $${LAVALINK_PASSWORD}" http://127.0.0.1:2333/v4/info > /dev/null'
+      interval: 15s
+      timeout: 5s
+      start_period: 120s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+      - music
+
+  cipher:
+    # Pinned upstream yt-cipher image; update the digest after checking upstream changes.
+    image: ghcr.io/kikkia/yt-cipher:master@sha256:4c5ec381ff57336cfc24822d2b526a5ad7cd0171f61065a1bbc87bb736842449
+    restart: unless-stopped
+    environment:
+      HOST: 0.0.0.0
+      PORT: '8001'
+      API_TOKEN: '${YOUTUBE_CIPHER_PASSWORD:-${LAVALINK_PASSWORD}}'
+      MAX_THREADS: '2'
+      PREPROCESSED_CACHE_SIZE: '20'
+      OVERRIDE_PLAYER_VARIANT: IAS
+    ports:
+      - '127.0.0.1:8001:8001'
+    read_only: true
+    tmpfs:
+      - /tmp:rw,exec,nosuid,size=128m
+      - /home/nonroot/.cache:rw,noexec,nosuid,size=128m,uid=65532,gid=65532,mode=0700
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+      - music
+
+  redis:
+    image: redis:7.4-alpine
+    profiles:
+      - redis
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: '${REDIS_PASSWORD:-}'
+      REDISCLI_AUTH: '${REDIS_PASSWORD:-}'
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        [ -n "$$REDIS_PASSWORD" ] || { echo 'Set REDIS_PASSWORD before enabling the redis profile.' >&2; exit 1; }
+        exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"
+    volumes:
+      - redis-data:/data
+    expose:
+      - '6379'
+    healthcheck:
+      test: ['CMD-SHELL', 'test "$$(redis-cli ping)" = "PONG"']
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+      - music
+
+networks:
+  music:
+    driver: bridge
+
+volumes:
+  bot-data:
+  bot-media:
+  lavalink-plugins:
+  lavalink-logs:
+  redis-data:

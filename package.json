@@ -1,0 +1,61 @@
+{
+  "name": "discord-music-stream",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A self-hosted Discord music bot with validated full-track mirroring and Lavalink v4.",
+  "type": "module",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsup",
+    "start": "node --enable-source-maps dist/index.js",
+    "start:sharded": "node --enable-source-maps dist/shard.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . --max-warnings 0",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm test && npm run build",
+    "config:check": "tsx scripts/check-env.ts",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "commands:register": "tsx scripts/register-commands.ts",
+    "youtube:auth": "tsx scripts/youtube-auth.ts",
+    "spotify:auth": "tsx scripts/spotify-auth.ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "12.11.1",
+    "discord.js": "14.27.0",
+    "dotenv": "18.0.7",
+    "drizzle-orm": "0.45.4",
+    "ioredis": "6.0.0",
+    "ipaddr.js": "2.5.0",
+    "lavalink-client": "2.11.0",
+    "pino": "10.4.0",
+    "zod": "4.6.6"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/better-sqlite3": "9.6.0",
+    "@types/node": "20.19.43",
+    "drizzle-kit": "0.31.11",
+    "eslint": "10.12.0",
+    "globals": "17.13.0",
+    "pino-pretty": "13.2.0",
+    "prettier": "3.9.10",
+    "tsup": "8.5.1",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.71.1",
+    "vite": "7.3.7",
+    "vitest": "4.1.11",
+    "yaml": "2.9.1"
+  },
+  "overrides": {
+    "esbuild": "0.28.2",
+    "tinypool": "2.1.2"
+  }
+}

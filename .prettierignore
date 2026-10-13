@@ -1,0 +1,13 @@
+node_modules/
+dist/
+coverage/
+data/
+logs/
+media-cache/
+lavalink/plugins/
+lavalink/logs/
+package-lock.json
+src/lib/db/migrations/meta/
+docs/phase-*-files.md
+.env
+.env.*

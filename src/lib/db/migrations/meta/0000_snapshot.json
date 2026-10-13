@@ -1,0 +1,804 @@
+{
+  "version": "6",
+  "dialect": "sqlite",
+  "id": "2a5d1d65-6149-4be2-a27c-8ba176ab5ba1",
+  "prevId": "00000000-0000-0000-0000-000000000000",
+  "tables": {
+    "blacklist": {
+      "name": "blacklist",
+      "columns": {
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "target_id": {
+          "name": "target_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "actor_id": {
+          "name": "actor_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(unixepoch() * 1000)"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(unixepoch() * 1000)"
+        }
+      },
+      "indexes": {
+        "blacklist_expiry_idx": {
+          "name": "blacklist_expiry_idx",
+          "columns": [
+            "expires_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "blacklist_kind_target_id_pk": {
+          "columns": [
+            "kind",
+            "target_id"
+          ],
+          "name": "blacklist_kind_target_id_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "blacklist_kind_valid": {
+          "name": "blacklist_kind_valid",
+          "value": "\"blacklist\".\"kind\" IN ('user', 'guild')"
+        },
+        "blacklist_reason_length": {
+          "name": "blacklist_reason_length",
+          "value": "length(\"blacklist\".\"reason\") BETWEEN 1 AND 500"
+        },
+        "blacklist_expiry_valid": {
+          "name": "blacklist_expiry_valid",
+          "value": "\"blacklist\".\"expires_at\" IS NULL OR \"blacklist\".\"expires_at\" > \"blacklist\".\"created_at\""
+        }
+      }
+    },
+    "guild_settings": {
+      "name": "guild_settings",
+      "columns": {
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "prefix": {
+          "name": "prefix",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'!'"
+        },
+        "dj_role_id": {
+          "name": "dj_role_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "music_channel_id": {
+          "name": "music_channel_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "stay_in_voice": {
+          "name": "stay_in_voice",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "default_volume": {
+          "name": "default_volume",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 80
+        },
+        "vote_skip_enabled": {
+          "name": "vote_skip_enabled",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "vote_skip_threshold": {
+          "name": "vote_skip_threshold",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 50
+        },
+        "announce_now_playing": {
+          "name": "announce_now_playing",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": true
+        },
+        "auto_leave_timeout_seconds": {
+          "name": "auto_leave_timeout_seconds",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 120
+        },
+        "language": {
+          "name": "language",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'en'"
+        },
+        "clean_mode": {
+          "name": "clean_mode",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "clean_after_seconds": {
+          "name": "clean_after_seconds",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 30
+        },
+        "max_queue_size": {
+          "name": "max_queue_size",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 2000
+        },
+        "max_track_length_seconds": {
+          "name": "max_track_length_seconds",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 7200
+        },
+        "autoplay_enabled": {
+          "name": "autoplay_enabled",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "sponsorblock_enabled": {
+          "name": "sponsorblock_enabled",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "embed_color": {
+          "name": "embed_color",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'#5865F2'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(unixepoch() * 1000)"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(unixepoch() * 1000)"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "guild_volume_range": {
+          "name": "guild_volume_range",
+          "value": "\"guild_settings\".\"default_volume\" BETWEEN 1 AND 200"
+        },
+        "guild_vote_threshold_range": {
+          "name": "guild_vote_threshold_range",
+          "value": "\"guild_settings\".\"vote_skip_threshold\" BETWEEN 1 AND 100"
+        },
+        "guild_queue_limit_range": {
+          "name": "guild_queue_limit_range",
+          "value": "\"guild_settings\".\"max_queue_size\" BETWEEN 1 AND 10000"
+        },
+        "guild_track_limit_range": {
+          "name": "guild_track_limit_range",
+          "value": "\"guild_settings\".\"max_track_length_seconds\" BETWEEN 30 AND 86400"
+        },
+        "guild_leave_timeout_range": {
+          "name": "guild_leave_timeout_range",
+          "value": "\"guild_settings\".\"auto_leave_timeout_seconds\" BETWEEN 10 AND 86400"
+        },
+        "guild_clean_timeout_range": {
+          "name": "guild_clean_timeout_range",
+          "value": "\"guild_settings\".\"clean_after_seconds\" BETWEEN 5 AND 3600"
+        },
+        "guild_language_values": {
+          "name": "guild_language_values",
+          "value": "\"guild_settings\".\"language\" IN ('en', 'tl')"
+        },
+        "guild_prefix_length": {
+          "name": "guild_prefix_length",
+          "value": "length(\"guild_settings\".\"prefix\") BETWEEN 1 AND 10"
+        },
+        "stay_in_voice_boolean": {
+          "name": "stay_in_voice_boolean",
+          "value": "\"guild_settings\".\"stay_in_voice\" IN (0, 1)"
+        },
+        "vote_skip_enabled_boolean": {
+          "name": "vote_skip_enabled_boolean",
+          "value": "\"guild_settings\".\"vote_skip_enabled\" IN (0, 1)"
+        },
+        "announce_now_playing_boolean": {
+          "name": "announce_now_playing_boolean",
+          "value": "\"guild_settings\".\"announce_now_playing\" IN (0, 1)"
+        },
+        "clean_mode_boolean": {
+          "name": "clean_mode_boolean",
+          "value": "\"guild_settings\".\"clean_mode\" IN (0, 1)"
+        },
+        "autoplay_enabled_boolean": {
+          "name": "autoplay_enabled_boolean",
+          "value": "\"guild_settings\".\"autoplay_enabled\" IN (0, 1)"
+        },
+        "sponsorblock_enabled_boolean": {
+          "name": "sponsorblock_enabled_boolean",
+          "value": "\"guild_settings\".\"sponsorblock_enabled\" IN (0, 1)"
+        }
+      }
+    },
+    "play_history": {
+      "name": "play_history",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "bot_id": {
+          "name": "bot_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "track_key": {
+          "name": "track_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "track_json": {
+          "name": "track_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "ended_at": {
+          "name": "ended_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "end_reason": {
+          "name": "end_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "history_user_order_idx": {
+          "name": "history_user_order_idx",
+          "columns": [
+            "user_id",
+            "started_at",
+            "id"
+          ],
+          "isUnique": false
+        },
+        "history_guild_order_idx": {
+          "name": "history_guild_order_idx",
+          "columns": [
+            "guild_id",
+            "started_at",
+            "id"
+          ],
+          "isUnique": false
+        },
+        "history_bot_order_idx": {
+          "name": "history_bot_order_idx",
+          "columns": [
+            "bot_id",
+            "started_at",
+            "id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "history_track_json_valid": {
+          "name": "history_track_json_valid",
+          "value": "json_valid(\"play_history\".\"track_json\")"
+        },
+        "history_start_time": {
+          "name": "history_start_time",
+          "value": "\"play_history\".\"started_at\" >= 0"
+        },
+        "history_end_state": {
+          "name": "history_end_state",
+          "value": "(\"play_history\".\"ended_at\" IS NULL AND \"play_history\".\"end_reason\" IS NULL) OR (\"play_history\".\"ended_at\" IS NOT NULL AND \"play_history\".\"end_reason\" IS NOT NULL AND \"play_history\".\"ended_at\" >= \"play_history\".\"started_at\" AND \"play_history\".\"end_reason\" IN ('finished', 'skipped', 'stopped', 'error', 'replaced'))"
+        }
+      }
+    },
+    "playlist_tracks": {
+      "name": "playlist_tracks",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "playlist_id": {
+          "name": "playlist_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "position": {
+          "name": "position",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "track_key": {
+          "name": "track_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "track_json": {
+          "name": "track_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "added_at": {
+          "name": "added_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(unixepoch() * 1000)"
+        }
+      },
+      "indexes": {
+        "playlist_track_position_idx": {
+          "name": "playlist_track_position_idx",
+          "columns": [
+            "playlist_id",
+            "position"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "playlist_tracks_playlist_id_playlists_id_fk": {
+          "name": "playlist_tracks_playlist_id_playlists_id_fk",
+          "tableFrom": "playlist_tracks",
+          "tableTo": "playlists",
+          "columnsFrom": [
+            "playlist_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "playlist_position_range": {
+          "name": "playlist_position_range",
+          "value": "\"playlist_tracks\".\"position\" BETWEEN 0 AND 9999"
+        },
+        "playlist_track_json_valid": {
+          "name": "playlist_track_json_valid",
+          "value": "json_valid(\"playlist_tracks\".\"track_json\")"
+        }
+      }
+    },
+    "playlists": {
+      "name": "playlists",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "owner_id": {
+          "name": "owner_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "name_key": {
+          "name": "name_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "is_shared": {
+          "name": "is_shared",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "share_token": {
+          "name": "share_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(unixepoch() * 1000)"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(unixepoch() * 1000)"
+        }
+      },
+      "indexes": {
+        "playlists_owner_name_idx": {
+          "name": "playlists_owner_name_idx",
+          "columns": [
+            "owner_id",
+            "name_key"
+          ],
+          "isUnique": true
+        },
+        "playlists_share_token_idx": {
+          "name": "playlists_share_token_idx",
+          "columns": [
+            "share_token"
+          ],
+          "isUnique": true
+        },
+        "playlists_owner_order_idx": {
+          "name": "playlists_owner_order_idx",
+          "columns": [
+            "owner_id",
+            "created_at",
+            "id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "playlist_name_length": {
+          "name": "playlist_name_length",
+          "value": "length(\"playlists\".\"name\") BETWEEN 1 AND 64"
+        },
+        "playlist_share_state": {
+          "name": "playlist_share_state",
+          "value": "(\"playlists\".\"is_shared\" = 0 AND \"playlists\".\"share_token\" IS NULL) OR (\"playlists\".\"is_shared\" = 1 AND \"playlists\".\"share_token\" IS NOT NULL)"
+        }
+      }
+    },
+    "queue_snapshots": {
+      "name": "queue_snapshots",
+      "columns": {
+        "bot_id": {
+          "name": "bot_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "voice_channel_id": {
+          "name": "voice_channel_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 1
+        },
+        "generation": {
+          "name": "generation",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 1
+        },
+        "payload": {
+          "name": "payload",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(unixepoch() * 1000)"
+        }
+      },
+      "indexes": {
+        "snapshots_bot_order_idx": {
+          "name": "snapshots_bot_order_idx",
+          "columns": [
+            "bot_id",
+            "updated_at",
+            "guild_id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "queue_snapshots_bot_id_guild_id_pk": {
+          "columns": [
+            "bot_id",
+            "guild_id"
+          ],
+          "name": "queue_snapshots_bot_id_guild_id_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "snapshot_payload_valid": {
+          "name": "snapshot_payload_valid",
+          "value": "json_valid(\"queue_snapshots\".\"payload\")"
+        },
+        "snapshot_version_valid": {
+          "name": "snapshot_version_valid",
+          "value": "\"queue_snapshots\".\"version\" = 1"
+        },
+        "snapshot_revision_valid": {
+          "name": "snapshot_revision_valid",
+          "value": "\"queue_snapshots\".\"revision\" >= 1"
+        }
+      }
+    },
+    "user_favorites": {
+      "name": "user_favorites",
+      "columns": {
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "track_key": {
+          "name": "track_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "track_json": {
+          "name": "track_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(unixepoch() * 1000)"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(unixepoch() * 1000)"
+        }
+      },
+      "indexes": {
+        "favorites_user_order_idx": {
+          "name": "favorites_user_order_idx",
+          "columns": [
+            "user_id",
+            "created_at",
+            "track_key"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "user_favorites_user_id_track_key_pk": {
+          "columns": [
+            "user_id",
+            "track_key"
+          ],
+          "name": "user_favorites_user_id_track_key_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "favorite_track_json_valid": {
+          "name": "favorite_track_json_valid",
+          "value": "json_valid(\"user_favorites\".\"track_json\")"
+        }
+      }
+    }
+  },
+  "views": {},
+  "enums": {},
+  "_meta": {
+    "schemas": {},
+    "tables": {},
+    "columns": {}
+  },
+  "internal": {
+    "indexes": {}
+  }
+}

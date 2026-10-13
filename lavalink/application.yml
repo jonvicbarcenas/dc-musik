@@ -1,0 +1,178 @@
+server:
+  port: 2333
+  address: 0.0.0.0
+  http2:
+    enabled: false
+
+lavalink:
+  pluginsDir: ./plugins
+  plugins:
+    - dependency: 'dev.lavalink.youtube:youtube-plugin:1.18.2'
+      repository: https://maven.lavalink.dev/releases
+      snapshot: false
+    - dependency: 'com.github.topi314.lavalyrics:lavalyrics-plugin:1.1.0'
+      repository: https://maven.lavalink.dev/releases
+      snapshot: false
+    - dependency: 'com.github.topi314.lavasrc:lavasrc-plugin:4.8.3'
+      repository: https://maven.lavalink.dev/releases
+      snapshot: false
+    - dependency: 'com.github.topi314.sponsorblock:sponsorblock-plugin:3.0.1'
+      repository: https://maven.lavalink.dev/releases
+      snapshot: false
+  server:
+    password: '${LAVALINK_PASSWORD}'
+    sources:
+      youtube: false
+      bandcamp: true
+      soundcloud: true
+      twitch: true
+      vimeo: true
+      nico: false
+      # Only trusted application-generated media-bridge URLs reach this source.
+      http: true
+      local: false
+    filters:
+      volume: true
+      equalizer: true
+      karaoke: true
+      timescale: true
+      tremolo: true
+      vibrato: true
+      distortion: true
+      rotation: true
+      channelMix: true
+      lowPass: true
+    nonAllocatingFrameBuffer: false
+    bufferDurationMs: 400
+    frameBufferDurationMs: 5000
+    opusEncodingQuality: 10
+    resamplingQuality: MEDIUM
+    trackStuckThresholdMs: 10000
+    useSeekGhosting: true
+    youtubePlaylistLoadLimit: '${YOUTUBE_PLAYLIST_PAGES:20}'
+    playerUpdateInterval: 5
+    youtubeSearchEnabled: true
+    soundcloudSearchEnabled: true
+    soundcloudFilterOutPreviewTracks: true
+    gc-warnings: true
+    timeouts:
+      connectTimeoutMs: 10000
+      connectionRequestTimeoutMs: 10000
+      socketTimeoutMs: '${LAVALINK_SOURCE_SOCKET_TIMEOUT_MS:30000}'
+
+# Plugin configuration belongs at the YAML root, outside lavalink.server.
+plugins:
+  youtube:
+    enabled: true
+    allowSearch: true
+    allowDirectVideoIds: false
+    allowDirectPlaylistIds: false
+    clients:
+      - MUSIC
+      - TV
+      - TVHTML5_SIMPLY
+      - ANDROID_VR
+      - WEB
+      - WEBEMBEDDED
+    oauth:
+      enabled: '${YOUTUBE_OAUTH_ENABLED:false}'
+      skipInitialization: '${YOUTUBE_OAUTH_SKIP_INITIALIZATION:false}'
+      # bootstrap.sh supplies PLUGINS_YOUTUBE_OAUTH_REFRESHTOKEN only when configured.
+      # For a standalone JAR with a token, uncomment:
+      # refreshToken: '${YOUTUBE_OAUTH_REFRESH_TOKEN}'
+    remoteCipher:
+      url: '${YOUTUBE_CIPHER_URL:}'
+      password: '${YOUTUBE_CIPHER_PASSWORD:${LAVALINK_PASSWORD}}'
+      userAgent: discord-music-stream
+    # bootstrap.sh supplies POT_TOKEN/POT_VISITORDATA only when both are nonempty.
+    # For a standalone JAR using poToken, uncomment:
+    # pot:
+    #   token: '${YOUTUBE_PO_TOKEN}'
+    #   visitorData: '${YOUTUBE_VISITOR_DATA}'
+  lavasrc:
+    # The bot applies stricter duration/version matching before playback.
+    # These providers are fallback configuration for catalog tracks on Lavalink.
+    providers:
+      - 'ytmsearch:"%ISRC%"'
+      - 'ytsearch:"%ISRC%"'
+      - 'ytmsearch:%QUERY%'
+      - 'ytsearch:%QUERY%'
+      - 'scsearch:%QUERY%'
+    sources:
+      spotify: '${SPOTIFY_ENABLED:false}'
+      applemusic: '${APPLE_MUSIC_ENABLED:false}'
+      deezer: '${DEEZER_ENABLED:false}'
+      yandexmusic: '${YANDEX_MUSIC_ENABLED:false}'
+      youtube: false
+      flowerytts: false
+      vkmusic: false
+      tidal: false
+      qobuz: false
+      ytdlp: false
+      jiosaavn: false
+    lyrics-sources:
+      spotify: '${SPOTIFY_LYRICS_ENABLED:false}'
+      youtube: '${YOUTUBE_LYRICS_ENABLED:true}'
+      deezer: '${DEEZER_LYRICS_ENABLED:false}'
+      yandexmusic: '${YANDEX_LYRICS_ENABLED:false}'
+      vkmusic: false
+      lrcLib: true
+    spotify:
+      clientId: '${SPOTIFY_CLIENT_ID:}'
+      clientSecret: '${SPOTIFY_CLIENT_SECRET:}'
+      spDc: '${SPOTIFY_SP_DC:}'
+      countryCode: '${SOURCE_COUNTRY_CODE:PH}'
+      playlistLoadLimit: '${SPOTIFY_PLAYLIST_PAGES:20}'
+      albumLoadLimit: '${SPOTIFY_ALBUM_PAGES:40}'
+      resolveArtistsInSearch: false
+      localFiles: false
+      preferPartnerApi: false
+      preferV1SearchApi: false
+      # bootstrap.sh binds CUSTOMTOKENENDPOINT only when a URL is provided.
+    applemusic:
+      countryCode: '${SOURCE_COUNTRY_CODE:PH}'
+      mediaAPIToken: '${APPLE_MUSIC_TOKEN:}'
+      playlistLoadLimit: '${APPLE_MUSIC_PLAYLIST_PAGES:7}'
+      albumLoadLimit: '${APPLE_MUSIC_ALBUM_PAGES:7}'
+    deezer:
+      arl: '${DEEZER_ARL:}'
+      masterDecryptionKey: '${DEEZER_MASTER_DECRYPTION_KEY:}'
+      formats: ['MP3_320', 'MP3_128']
+    yandexmusic:
+      accessToken: '${YANDEX_MUSIC_ACCESS_TOKEN:}'
+      playlistLoadLimit: '${YANDEX_PLAYLIST_PAGES:20}'
+      albumLoadLimit: '${YANDEX_ALBUM_PAGES:40}'
+      artistLoadLimit: '${YANDEX_ARTIST_PAGES:10}'
+    youtube:
+      countryCode: '${SOURCE_COUNTRY_CODE:PH}'
+      language: en
+  lavalyrics:
+    sources:
+      - youtube
+      - spotify
+      - deezer
+      - yandexmusic
+      # LavaSrc's LRCLIB provider participates as a fallback.
+
+# SponsorBlock is installed but inactive until categories are enabled on a player.
+metrics:
+  prometheus:
+    enabled: false
+    endpoint: /metrics
+
+logging:
+  level:
+    root: INFO
+    lavalink: INFO
+    dev.lavalink.youtube.http.YoutubeOauth2Handler: INFO
+  file:
+    path: ./logs
+  request:
+    enabled: false
+    includeHeaders: false
+    includeQueryString: false
+    includePayload: false
+  logback:
+    rollingpolicy:
+      max-file-size: 10MB
+      max-history: 7
