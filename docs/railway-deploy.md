@@ -132,6 +132,32 @@ The health endpoint verifies Discord login and the authenticated audio-node
 connection. It cannot prove that a particular third-party track or Discord voice
 stream succeeds; that requires the playback checks above.
 
+### YouTube stops partway through a song
+
+Deploy both **bot** and **lavalink** from the updated repository. Lavalink now pins
+youtube-source commit `2be8e542d3f6f178e048dca565892684c2e40177` from the official
+snapshot repository. The `1.18.2` release lacks the merged
+[TV client identity fix](https://github.com/lavalink-devs/youtube-source/pull/233),
+[MPEG stream-length fix](https://github.com/lavalink-devs/youtube-source/pull/235),
+and [cipher connection fix](https://github.com/lavalink-devs/youtube-source/pull/245).
+The build is pinned to that commit rather than a moving snapshot.
+
+On a YouTube or SoundCloud failure, the bot reloads the same track once, preserving
+its position, pause state, volume and queue. If it fails again, it searches for a
+matching full-length alternative; YouTube recovery tries SoundCloud first. Matches
+must pass the existing artist, title, version and duration checks. There are at
+most two recovery attempts per song (one for live streams), then the queue advances.
+Catalog mirror recovery also preserves progress. A stream can pause briefly while
+the replacement loads. The bot logs a fixed failure category and progress without
+logging provider URLs or tokens.
+
+After both services deploy, replay the failed video and let it run past the old
+failure point. If every YouTube client reports login/bot-check errors, verify
+YouTube authorization on **lavalink** using the next section; Discord dashboard
+sign-in does not authorize YouTube playback. Updating the bot alone cannot remove
+a provider-side restriction, and an alternate source is only used when a valid
+full-length match exists.
+
 ## Source authorization
 
 The exporter copies saved YouTube OAuth configuration to Lavalink and Spotify

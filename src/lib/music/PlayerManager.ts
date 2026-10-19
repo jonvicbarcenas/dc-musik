@@ -23,7 +23,7 @@ import type { SourceResolver } from './SourceResolver.js';
 import type { AutoplayEngine } from './AutoplayEngine.js';
 import { ImportScheduler } from './ImportScheduler.js';
 import { validateFilters } from './FilterPresets.js';
-import { catalogSources } from './TrackCodec.js';
+import { catalogSources, mirrorSources } from './TrackCodec.js';
 import type { AudioTransport, ResolvedItem, TrackEvent } from './types.js';
 
 interface EngineEvents {
@@ -616,6 +616,17 @@ export class PlayerManager extends EventEmitter<EngineEvents> {
       if (event.type === 'end' && ['replaced', 'stopped', 'cleanup'].includes(event.reason ?? ''))
         return;
       if (event.type === 'error' || event.type === 'stuck' || event.reason === 'loadFailed') {
+        this.logger.warn(
+          {
+            guildId: event.guildId,
+            source: session.state.current.track.source,
+            audioSource: session.state.current.playable?.source,
+            positionMs: this.position(session),
+            failure: event.failure ?? event.type,
+            retries: session.retries,
+          },
+          'Audio source playback failed.',
+        );
         await this.retryOrAdvance(session, event.encoded);
         return;
       }
@@ -935,7 +946,10 @@ export class PlayerManager extends EventEmitter<EngineEvents> {
         ) {
           playable = await this.resolver.resolve(
             claim.entry.track,
-            session.excluded,
+            // The first direct-source retry deliberately refreshes the same video.
+            mirrorSources.has(claim.entry.track.source) && session.retries === 1
+              ? new Set()
+              : session.excluded,
             claim.nodeId,
             claim.controller.signal,
           );
@@ -987,6 +1001,9 @@ export class PlayerManager extends EventEmitter<EngineEvents> {
             this.capturePosition(session);
             session.online = false;
             session.playing = false;
+          } else if (session.retries > 0) {
+            // A failed metadata reload must still get the alternate-source attempt.
+            await this.retryOrAdvance(session, claim.entry.playable?.encoded ?? null);
           } else {
             await this.retire(session, 'error');
             this.emit(
@@ -1027,22 +1044,33 @@ export class PlayerManager extends EventEmitter<EngineEvents> {
   }
   private async retryOrAdvance(session: Session, encoded: string | null): Promise<void> {
     const current = this.requireCurrent(session);
-    if (encoded) session.excluded.add(encoded);
-    if (catalogSources.has(current.track.source) && session.retries < 2) {
+    const directSource = mirrorSources.has(current.track.source);
+    const refresh = directSource && session.retries === 0;
+    // An encoding identifies a video, not its short-lived stream URL. Permit one
+    // fresh load of that same video before excluding it and looking for a mirror.
+    const failed = encoded ?? current.playable?.encoded;
+    if (failed) session.excluded.add(failed);
+    const maximumRetries = current.track.isStream ? 1 : 2;
+    if (
+      (catalogSources.has(current.track.source) || directSource) &&
+      session.retries < maximumRetries
+    ) {
+      this.capturePosition(session);
       if (session.state.currentPlaybackId)
         await this.repositories.history.finish(session.state.currentPlaybackId, 'error');
       session.resolution?.abort();
       session.playing = false;
       session.retries++;
       current.playable = null;
-      session.state.positionMs = 0;
       session.positionAt = Date.now();
       session.state.currentPlaybackId = randomUUID();
       await this.transport.stop(session.state.guildId).catch(() => undefined);
       this.emit(
         'notice',
         session.state.guildId,
-        'The audio source failed. Trying another full-length mirror.',
+        refresh
+          ? 'The audio stream was interrupted. Reconnecting to this track.'
+          : 'The audio source failed. Trying another full-length mirror.',
       );
     } else {
       await this.retire(session, 'error');

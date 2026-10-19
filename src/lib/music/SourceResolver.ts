@@ -7,6 +7,8 @@ import type { CatalogClient } from './CatalogClient.js';
 import { MirrorMatcher } from './MirrorMatcher.js';
 import {
   catalogSources,
+  mirrorSources,
+  normalizeSource,
   cleanText,
   isPreviewRequest,
   toPlayableTrack,
@@ -165,7 +167,9 @@ export class SourceResolver {
           source: track.source === 'attachment' ? 'attachment' : 'http',
         });
       }
-      if (!catalogSources.has(track.source)) {
+      const recoveringDirectSource =
+        mirrorSources.has(track.source) && !track.isStream && excluded.size > 0;
+      if (!catalogSources.has(track.source) && !recoveringDirectSource) {
         if (!track.uri) throw unavailable();
         // Restore never hands an arbitrary saved HTTP URL or encoding to Lavalink.
         const { url } = await this.guard.validate(track.uri);
@@ -180,33 +184,42 @@ export class SourceResolver {
         if (!raw) throw unavailable();
         return toPlayableTrack(raw);
       }
+      const isExcluded = (candidate: RawTrack | PlayableTrack): boolean => {
+        if (!candidate.encoded || excluded.has(candidate.encoded)) return true;
+        // Reloaded metadata can change the encoding without changing the failed video.
+        if (recoveringDirectSource && candidate.identifier === track.identifier) {
+          try {
+            return normalizeSource(candidate.source) === track.source;
+          } catch {
+            return true;
+          }
+        }
+        return false;
+      };
       const key = `mirror:v1:${createHash('sha256')
         .update(
           JSON.stringify([track.key, track.title, track.artist, track.durationMs, track.isrc]),
         )
         .digest('hex')}`;
       const cached = playableTrackSchema.safeParse(await this.cache.get(key));
-      if (
-        cached.success &&
-        !excluded.has(cached.data.encoded) &&
-        this.validMirror(track, cached.data)
-      )
+      if (cached.success && !isExcluded(cached.data) && this.validMirror(track, cached.data))
         return cached.data;
       const candidates: RawTrack[] = [];
       const query = `${track.artist} - ${track.title}`;
+      const youtubeSearches = [`ytmsearch:${query}`, `ytsearch:${query}`];
+      const soundcloudSearch = `scsearch:${query}`;
       const searches = [
+        // A blocked YouTube session commonly affects every video on the same node.
+        ...(recoveringDirectSource && track.source === 'youtube' ? [soundcloudSearch] : []),
         ...(track.isrc ? [`ytmsearch:"${track.isrc}"`, `ytsearch:"${track.isrc}"`] : []),
-        `ytmsearch:${query}`,
-        `ytsearch:${query}`,
-        `scsearch:${query}`,
+        ...youtubeSearches,
+        ...(recoveringDirectSource && track.source === 'youtube' ? [] : [soundcloudSearch]),
       ];
       for (const search of searches) {
         signal?.throwIfAborted();
         try {
           const result = await this.transport.load(search, nodeId);
-          candidates.push(
-            ...result.tracks.filter((candidate) => !excluded.has(candidate.encoded ?? '')),
-          );
+          candidates.push(...result.tracks.filter((candidate) => !isExcluded(candidate)));
         } catch (error) {
           if (error instanceof MusicError && error.code === 'NODE_UNAVAILABLE') throw error;
         }

@@ -371,7 +371,24 @@ export function trackEvent(
             ? 'stuck'
             : 'error',
     reason: payload.type === 'TrackEndEvent' ? payload.reason : null,
+    ...(payload.type === 'TrackExceptionEvent'
+      ? { failure: classifyPlaybackFailure(payload.exception) }
+      : {}),
   };
+}
+
+/** Only a fixed category crosses into logs; exception text can contain signed URLs/tokens. */
+function classifyPlaybackFailure(
+  exception: TrackExceptionEvent['exception'],
+): NonNullable<TrackEvent['failure']> {
+  const detail = `${exception?.message ?? ''} ${exception?.cause ?? ''} ${exception?.causeStackTrace ?? ''}`;
+  if (/requires? login|sign[ -]?in|not a bot|oauth|login_required/i.test(detail))
+    return 'authentication';
+  if (/\b403\b|forbidden/i.test(detail)) return 'forbidden';
+  if (/\b429\b|rate.?limit|too many requests/i.test(detail)) return 'rate_limited';
+  if (/timed? ?out|timeout/i.test(detail)) return 'timeout';
+  if (/decod|mpeg|matroska|end of (?:file|stream)|eof/i.test(detail)) return 'decode';
+  return 'unknown';
 }
 
 export function toClientTrack(track: PlayableTrack): Track {

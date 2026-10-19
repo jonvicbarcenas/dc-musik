@@ -63,4 +63,5 @@ export interface TrackEvent {
   encoded: string | null;
   type: 'start' | 'end' | 'error' | 'stuck';
   reason: string | null;
+  failure?: 'authentication' | 'forbidden' | 'rate_limited' | 'timeout' | 'decode' | 'unknown';
 }
