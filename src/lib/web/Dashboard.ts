@@ -10,6 +10,9 @@ import type { SourceResolver } from '../music/SourceResolver.js';
 import { collectCatalog } from '../music/ImportScheduler.js';
 import { MusicError } from '../utils/errors.js';
 import { Semaphore } from '../utils/AsyncLock.js';
+import { CommandError } from '../../framework/errors.js';
+import { liveActionSchema } from './LiveQueue.js';
+import type { LiveQueue } from './LiveQueue.js';
 
 const userSchema = z.object({
   id: snowflakeSchema,
@@ -33,6 +36,7 @@ export interface DashboardOptions {
   resolver: () => Pick<SourceResolver, 'search' | 'pages'> | undefined;
   importLimit: number;
   fetch?: typeof fetch;
+  live?: LiveQueue;
 }
 class HttpError extends Error {
   constructor(
@@ -102,8 +106,18 @@ export class Dashboard {
       } else if (error instanceof RepositoryError && error.code !== 'CORRUPT_DATA') {
         status = error.code === 'NOT_FOUND' ? 404 : error.code === 'CONFLICT' ? 409 : 400;
         message = error.message;
+      } else if (error instanceof CommandError) {
+        status = 403;
+        message = error.message;
       } else if (error instanceof MusicError) {
-        status = 400;
+        status =
+          error.code === 'CONFLICT'
+            ? 409
+            : ['NO_PLAYER', 'NOT_FOUND'].includes(error.code)
+              ? 404
+              : error.code === 'NODE_UNAVAILABLE'
+                ? 503
+                : 400;
         message = error.message;
       }
       this.json(response, status, { error: message });
@@ -243,6 +257,89 @@ export class Dashboard {
     }
     const owner = session.user.id;
     const repository = this.options.repositories.playlists;
+    if (path === '/api/live' && method === 'GET') {
+      this.json(response, 200, { sessions: (await this.options.live?.list(owner)) ?? [] });
+      return;
+    }
+    const liveMatch = /^\/api\/live\/([\d:]+)(?:\/(tracks|actions|playlist|import|save))?$/.exec(
+      path,
+    );
+    if (liveMatch) {
+      const live = this.options.live;
+      if (!live) throw new HttpError(503, 'Live playback is starting. Please try again shortly.');
+      const id = liveMatch[1] ?? '';
+      const action = liveMatch[2];
+      if (!action && method === 'GET') {
+        this.json(response, 200, await live.view(owner, id));
+        return;
+      }
+      if (action === 'tracks' && method === 'PUT') {
+        const ids = z.array(z.uuid()).max(10_000);
+        const body = z
+          .strictObject({ expectedIds: ids, orderedIds: ids })
+          .parse(await this.body(request));
+        await live.edit(owner, id, body.expectedIds, body.orderedIds);
+        this.json(response, 200, { ok: true });
+        return;
+      }
+      if (action === 'tracks' && method === 'POST') {
+        const { resultId } = z.strictObject({ resultId: z.uuid() }).parse(await this.body(request));
+        const result = session.results.get(resultId);
+        if (!result || result.expires <= Date.now())
+          throw new HttpError(400, 'This search result expired. Search for the song again.');
+        await live.add(owner, id, [result.track], session.user.name);
+        this.json(response, 200, { ok: true });
+        return;
+      }
+      if (action === 'playlist' && method === 'POST') {
+        const { playlistId } = z
+          .strictObject({ playlistId: z.uuid() })
+          .parse(await this.body(request));
+        const tracks = await repository.tracksOwned(owner, playlistId);
+        if (!tracks.length) throw new HttpError(400, 'This playlist has no songs to queue.');
+        await live.add(owner, id, tracks, session.user.name);
+        this.json(response, 200, { added: tracks.length });
+        return;
+      }
+      if (action === 'actions' && method === 'POST') {
+        const result = await live.act(owner, id, liveActionSchema.parse(await this.body(request)));
+        this.json(response, 200, { message: result });
+        return;
+      }
+      if (action === 'import' && method === 'POST') {
+        const view = await live.view(owner, id);
+        if (!view.permissions.control)
+          throw new CommandError(
+            'PERMISSION',
+            'You need the configured DJ role or Manage Server to add songs.',
+          );
+        const tracks = await this.importTracks(request, session);
+        await live.add(owner, id, tracks, session.user.name);
+        this.json(response, 200, { added: tracks.length });
+        return;
+      }
+      if (action === 'save' && method === 'POST') {
+        const body = z
+          .strictObject({ name: playlistNameSchema, includeCurrent: z.boolean() })
+          .parse(await this.body(request));
+        const view = await live.view(owner, id);
+        const tracks = [
+          ...(body.includeCurrent && view.current ? [view.current.track] : []),
+          ...view.upcoming.map((entry) => entry.track),
+        ];
+        if (!tracks.length) throw new HttpError(400, 'There are no songs to save.');
+        const playlist = await repository.create(owner, body.name);
+        try {
+          await repository.append(owner, playlist.id, tracks);
+        } catch (error) {
+          await repository.delete(owner, playlist.id);
+          throw error;
+        }
+        this.json(response, 201, { playlist });
+        return;
+      }
+      throw new HttpError(405, 'Method not allowed.');
+    }
     if (method === 'POST' && path === '/api/logout') {
       if (sessionId) this.sessions.delete(sessionId);
       response.setHeader('Set-Cookie', this.cookie('dms_session', '', 0));
@@ -325,42 +422,9 @@ export class Dashboard {
       return;
     }
     if (action === 'import' && method === 'POST') {
-      this.expensive(session);
-      const { url: link } = z
-        .strictObject({ url: z.url().max(4096) })
-        .parse(await this.body(request));
-      const parsed = new URL(link);
-      if (
-        parsed.protocol !== 'https:' ||
-        parsed.username ||
-        parsed.password ||
-        ![
-          'open.spotify.com',
-          'youtube.com',
-          'www.youtube.com',
-          'music.youtube.com',
-          'm.youtube.com',
-          'youtu.be',
-          'soundcloud.com',
-          'www.soundcloud.com',
-        ].includes(parsed.hostname)
-      )
-        throw new HttpError(400, 'Paste a public Spotify, YouTube, or SoundCloud link.');
-      const items = await this.work.run(
-        () =>
-          collectCatalog(
-            this.resolver().pages(link, this.options.importLimit, this.signal()),
-            this.options.importLimit,
-          ),
-        this.cancellation.signal,
-      );
-      if (!items.length) throw new HttpError(400, 'No tracks could be imported from this link.');
-      await repository.append(
-        owner,
-        id,
-        items.map((item) => item.track),
-      );
-      this.json(response, 200, { added: items.length });
+      const tracks = await this.importTracks(request, session);
+      await repository.append(owner, id, tracks);
+      this.json(response, 200, { added: tracks.length });
       return;
     }
     if (action === 'share' && method === 'POST') {
@@ -375,6 +439,39 @@ export class Dashboard {
     const resolver = this.options.resolver();
     if (!resolver) throw new HttpError(503, 'Music search is starting. Please try again shortly.');
     return resolver;
+  }
+  private async importTracks(request: IncomingMessage, session: Session): Promise<StoredTrack[]> {
+    this.expensive(session);
+    const { url: link } = z
+      .strictObject({ url: z.url().max(4096) })
+      .parse(await this.body(request));
+    const parsed = new URL(link);
+    if (
+      parsed.protocol !== 'https:' ||
+      parsed.username ||
+      parsed.password ||
+      ![
+        'open.spotify.com',
+        'youtube.com',
+        'www.youtube.com',
+        'music.youtube.com',
+        'm.youtube.com',
+        'youtu.be',
+        'soundcloud.com',
+        'www.soundcloud.com',
+      ].includes(parsed.hostname)
+    )
+      throw new HttpError(400, 'Paste a public Spotify, YouTube, or SoundCloud link.');
+    const items = await this.work.run(
+      () =>
+        collectCatalog(
+          this.resolver().pages(link, this.options.importLimit, this.signal()),
+          this.options.importLimit,
+        ),
+      this.cancellation.signal,
+    );
+    if (!items.length) throw new HttpError(400, 'No tracks could be imported from this link.');
+    return items.map((item) => item.track);
   }
   private signal(): AbortSignal {
     return AbortSignal.any([this.cancellation.signal, AbortSignal.timeout(90_000)]);

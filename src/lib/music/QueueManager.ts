@@ -94,6 +94,24 @@ export class QueueManager {
     const entry = this.entries.splice(from - 1, 1)[0];
     if (entry) this.entries.splice(to - 1, 0, entry);
   }
+  /** Compare entry identities inside the player's lock, including duplicates and natural advances. */
+  edit(expectedIds: readonly string[], orderedIds: readonly string[]): void {
+    if (
+      expectedIds.length !== this.entries.length ||
+      this.entries.some((entry, index) => entry.id !== expectedIds[index])
+    )
+      throw new MusicError('CONFLICT', 'The live queue changed. Refresh it and try again.');
+    if (new Set(orderedIds).size !== orderedIds.length)
+      throw new MusicError('INVALID_INPUT', 'A queue entry cannot appear twice.');
+    const byId = new Map(this.entries.map((entry) => [entry.id, entry]));
+    const entries = orderedIds.map((id) => {
+      const entry = byId.get(id);
+      if (!entry) throw new MusicError('INVALID_INPUT', 'That song is no longer in this queue.');
+      return entry;
+    });
+    this.remember();
+    this.entries = entries;
+  }
   swap(first: number, second: number): void {
     this.position(first);
     this.position(second);

@@ -6,6 +6,8 @@ import { openDatabase, applyMigrations, createRepositories } from '../src/lib/db
 import type { DatabaseConnection, Repositories } from '../src/lib/db/index.js';
 import type { PlaylistDetail, StoredTrack } from '../src/lib/db/models.js';
 import { parseEnv } from '../src/config/env.js';
+import { liveFixture, target } from './fixtures/live.js';
+import type { LiveView } from '../src/lib/web/LiveQueue.js';
 
 const owner = '123456789012345678';
 const other = '223456789012345678';
@@ -35,6 +37,7 @@ describe('playlist dashboard', () => {
   let server: Server;
   let origin: string;
   let userId: string;
+  let fixture: Awaited<ReturnType<typeof liveFixture>>;
   const search = vi.fn(() => Promise.resolve([{ track, playable: null }]));
   const discordFetch = vi.fn<typeof fetch>((input) =>
     Promise.resolve(
@@ -61,6 +64,7 @@ describe('playlist dashboard', () => {
     connection = openDatabase(':memory:');
     applyMigrations(connection);
     repositories = createRepositories(connection);
+    fixture = await liveFixture(repositories);
     server = createServer((request, response) => {
       void dashboard.handle(request, response);
     });
@@ -82,10 +86,12 @@ describe('playlist dashboard', () => {
       }),
       importLimit: 2000,
       fetch: discordFetch,
+      live: fixture.live,
     });
   });
   afterEach(async () => {
     await dashboard.close();
+    await fixture.close();
     await new Promise<void>((resolve) => {
       server.close(() => resolve());
       server.closeAllConnections();
@@ -408,6 +414,134 @@ describe('playlist dashboard', () => {
       (await fetch(`${origin}/api/logout`, { method: 'POST', headers, body: '{}' })).status,
     ).toBe(200);
     expect((await fetch(`${origin}/api/playlists`, { headers })).status).toBe(401);
+  });
+  it('routes live queue edits and playback controls to the current Discord player', async () => {
+    const headers = await signIn();
+    const sessions = await json<{ sessions: { id: string }[] }>(
+      await fetch(`${origin}/api/live`, { headers }),
+    );
+    expect(sessions.sessions.map((session) => session.id)).toEqual([target]);
+    const path = `${origin}/api/live/${target}`;
+    const before = await json<LiveView>(await fetch(path, { headers }));
+    const expectedIds = before.upcoming.map((entry) => entry.id);
+    expect(
+      (
+        await fetch(`${path}/tracks`, {
+          method: 'PUT',
+          headers,
+          body: JSON.stringify({ expectedIds, orderedIds: expectedIds.slice().reverse() }),
+        })
+      ).status,
+    ).toBe(200);
+    const paused = await fetch(`${path}/actions`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ action: 'pause', paused: true, playbackId: before.playbackId }),
+    });
+    expect(paused.status).toBe(200);
+    const after = await json<LiveView>(await fetch(path, { headers }));
+    expect(after.paused).toBe(true);
+    expect(after.current?.id).toBe(before.current?.id);
+    expect(after.upcoming.map((entry) => entry.id)).toEqual(expectedIds.slice().reverse());
+    expect(
+      (
+        await fetch(`${path}/actions`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ action: 'volume', volume: 201 }),
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await fetch(`${path}/actions`, {
+          method: 'POST',
+          headers: { ...headers, Origin: 'https://attacker.example' },
+          body: JSON.stringify({ action: 'volume', volume: 30 }),
+        })
+      ).status,
+    ).toBe(403);
+  });
+  it('adds search results, owned playlists and imports to live playback and saves the session', async () => {
+    const headers = await signIn();
+    const path = `${origin}/api/live/${target}`;
+    const results = await json<{ results: { id: string }[] }>(
+      await fetch(`${origin}/api/search?q=song`, { headers }),
+    );
+    expect(
+      (
+        await fetch(`${path}/tracks`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ resultId: results.results[0]?.id }),
+        })
+      ).status,
+    ).toBe(200);
+    const playlist = await repositories.playlists.create(owner, 'To queue');
+    await repositories.playlists.append(owner, playlist.id, [track]);
+    expect(
+      (
+        await fetch(`${path}/playlist`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ playlistId: playlist.id }),
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await fetch(`${path}/import`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ url: track.uri }),
+        })
+      ).status,
+    ).toBe(200);
+    const view = await json<LiveView>(await fetch(path, { headers }));
+    expect(view.upcoming).toHaveLength(6);
+    const saved = await json<{ playlist: { id: string } }>(
+      await fetch(`${path}/save`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ name: 'Saved session', includeCurrent: true }),
+      }),
+    );
+    expect(await repositories.playlists.tracksOwned(owner, saved.playlist.id)).toHaveLength(7);
+    expect(JSON.stringify(view)).not.toContain('test-encoding');
+    const foreign = await repositories.playlists.create(other, 'Someone else');
+    expect(
+      (
+        await fetch(`${path}/playlist`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ playlistId: foreign.id }),
+        })
+      ).status,
+    ).toBe(404);
+  });
+  it('refreshes live permission errors and returns conflict status for a stale queue', async () => {
+    const headers = await signIn();
+    const path = `${origin}/api/live/${target}`;
+    expect(
+      (
+        await fetch(`${path}/tracks`, {
+          method: 'PUT',
+          headers,
+          body: JSON.stringify({ expectedIds: [], orderedIds: [] }),
+        })
+      ).status,
+    ).toBe(409);
+    fixture.presence.present = false;
+    expect((await fetch(path, { headers })).status).toBe(403);
+    expect(
+      (
+        await fetch(`${path}/actions`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ action: 'volume', volume: 30 }),
+        })
+      ).status,
+    ).toBe(403);
   });
 });
 

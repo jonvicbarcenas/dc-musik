@@ -16,6 +16,11 @@ Without `DISCORD_CLIENT_SECRET`, the home page displays setup guidance and priva
 
 ## Features
 
+- Open **Live queue** to manage the active bot in the Discord voice channel you have joined. If a matching session exists at sign-in, it opens automatically.
+- View the current song and progress; pause, resume, set volume, or skip (including vote skip when enabled).
+- Drag, remove, shuffle, deduplicate, or clear upcoming songs without interrupting the current song. Undo the last queue edit within twenty seconds, provided playback has not advanced.
+- Add search results, public source links, or a saved personal playlist directly to the live Discord queue. Save the current song and upcoming queue as a new personal playlist.
+
 - Create, rename, and delete personal playlists.
 - Search YouTube or SoundCloud by song title or artist and add results.
 - Import public Spotify, YouTube, or SoundCloud links using the bot's existing source support and limits.
@@ -30,6 +35,12 @@ Edits save immediately. Refresh the playlist to load changes made elsewhere. If 
 Search and imports require a ready music bot and a working Lavalink node. Spotify import has the same authorization and availability requirements as the Discord commands. Search results expire after ten minutes; search again if adding an old result fails.
 
 ## Runtime and access
+
+The live queue refreshes every five seconds while the view is visible and idle. Editing pauses automatic refresh until the interaction finishes. Songs added or advanced from Discord appear on the next refresh. Stale reorder/removal requests are rejected by entry ID, and stale pause/skip buttons cannot control the next song.
+
+Live queues are visible only while your signed-in Discord account shares that bot's voice channel. Writes refresh your member roles and recheck voice membership inside the player's serialized operation. The same DJ/Manage Server rules, account/server blacklists, queue limits, and vote-skip counts used by Discord commands apply. When a DJ role is configured, other listeners can follow the queue and use permitted vote skip. Leaving voice removes access. The dashboard uses the bot's existing gateway voice state, so its OAuth scope remains `identify`.
+
+Saved playlists and the live queue are separate: editing a personal playlist changes the saved library; **Add saved playlist** appends its songs to the active session. Live queue edits affect upcoming playback immediately and do not rewrite the original personal playlist. The current song appears above the editable list.
 
 The dashboard currently runs in the normal single-process entry point (`npm start` / `npm run dev`), including deployments with extra bot accounts. The optional `npm run start:sharded` supervisor continues to expose health checks only; use the normal entry point for the dashboard.
 

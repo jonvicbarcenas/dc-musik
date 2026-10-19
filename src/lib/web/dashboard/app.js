@@ -15,9 +15,15 @@ const state = {
   searchQuery: '',
   source: 'ytsearch',
   request: 0,
+  mode: 'library',
+  liveSessions: [],
+  liveId: null,
+  liveError: '',
+  refreshing: false,
 };
 let toastTimer;
 let draggedId;
+let liveRequest = 0;
 const icon = (name) => `<svg class="icon" aria-hidden="true"><use href="#i-${name}" /></svg>`;
 const esc = (value) =>
   String(value ?? '').replace(
@@ -47,6 +53,8 @@ async function api(path, method = 'GET', body) {
     if (response.status === 401) {
       state.session.user = null;
       state.current = null;
+      state.liveSessions = [];
+      state.playlists = [];
       render();
     }
     const error = new Error(data.error || 'Something went wrong. Please try again.');
@@ -77,13 +85,13 @@ function render() {
   app.innerHTML = `<div class="app-shell">
     <aside class="sidebar">
       <a class="brand" href="/" aria-label="Music Room home"><span class="brand-mark">${icon('music')}</span>music room<span class="muted">.</span></a>
-      <div class="sidebar-scroll"><div class="library-top"><span class="sidebar-label">Your library</span><button class="icon-btn" data-action="create" aria-label="Create playlist" ${!user ? 'disabled' : ''}>${icon('plus')}</button></div>
-        <nav class="playlist-nav" aria-label="Playlists">${state.playlists.map((playlist) => `<button class="playlist-link${state.current?.playlist.id === playlist.id ? ' active' : ''}" data-playlist="${playlist.id}" ${state.current?.playlist.id === playlist.id ? 'aria-current="page"' : ''}>${icon('music')}<span>${esc(playlist.name)}</span></button>`).join('') || `<p class="nav-empty">${user ? 'A fresh start for your next mix.' : 'Your playlists will feel at home here.'}</p>`}</nav>
+      <div class="sidebar-scroll">${user ? `<button class="playlist-link live-nav${state.mode === 'live' ? ' active' : ''}" data-action="live" ${state.mode === 'live' ? 'aria-current="page"' : ''}><span class="dot"></span><span>Live queue</span><small>Discord</small></button>` : ''}<div class="library-top"><span class="sidebar-label">Your library</span><button class="icon-btn" data-action="create" aria-label="Create playlist" ${!user ? 'disabled' : ''}>${icon('plus')}</button></div>
+        <nav class="playlist-nav" aria-label="Playlists">${state.playlists.map((playlist) => `<button class="playlist-link${state.mode === 'library' && state.current?.playlist.id === playlist.id ? ' active' : ''}" data-playlist="${playlist.id}" ${state.mode === 'library' && state.current?.playlist.id === playlist.id ? 'aria-current="page"' : ''}>${icon('music')}<span>${esc(playlist.name)}</span></button>`).join('') || `<p class="nav-empty">${user ? 'A fresh start for your next mix.' : 'Your playlists will feel at home here.'}</p>`}</nav>
       </div>
       <div class="sidebar-bottom"><div class="avatar">${esc(user?.name.slice(0, 1).toUpperCase() || 'M')}</div><div class="identity"><strong>${esc(user?.name || 'Your listening space')}</strong>${user ? '<button data-action="logout">Sign out</button>' : '<small>Made for Discord</small>'}</div></div>
     </aside>
-    <main class="workspace"><header class="topbar"><div class="crumb">Library <span>/</span><span>${esc(state.current?.playlist.name || 'Your music')}</span></div><span class="connection"><span class="dot"></span>${user ? 'Connected to Discord' : 'Your next session starts here'}</span></header>
-      ${!user ? welcome() : state.current ? playlistPage() : emptyLibrary()}
+    <main class="workspace"><header class="topbar"><div class="crumb">${state.mode === 'live' ? 'Live queue' : 'Library'} <span>/</span><span>${esc(state.current?.playlist.name || 'Your music')}</span></div><span class="connection"><span class="dot"></span>${user ? 'Connected to Discord' : 'Your next session starts here'}</span></header>
+      ${!user ? welcome() : state.current ? playlistPage() : state.mode === 'live' ? emptyLive() : emptyLibrary()}
     </main></div>`;
   if (state.current) {
     renderTracks();
@@ -99,16 +107,24 @@ function welcome() {
 function emptyLibrary() {
   return `<section class="welcome"><div class="eyebrow">Your personal library</div><h1>Good music.<br>Great company.</h1><p>Start with a playlist. Add the songs you keep coming back to, then bring the mix to Discord.</p>${button('Create your first playlist', 'plus', 'create', 'primary')}<div class="feature-strip"><span>${icon('grip')}Drag to reorder</span><span>${icon('search')}Search for songs</span><span>${icon('check')}Saved automatically</span></div></section>`;
 }
+function emptyLive() {
+  return `<section class="welcome"><div class="eyebrow">Your Discord listening session</div><h1>Meet you<br>in voice.</h1><p>${esc(state.liveError || 'Join a Discord voice channel where this music bot is connected, then open the live queue. You can manage the songs playing there from here.')}</p>${button('Find my session', 'refresh', 'live', 'primary')}<div class="feature-strip"><span>${icon('grip')}Reorder upcoming songs</span><span>${icon('play')}Control playback</span><span>${icon('plus')}Add to the live queue</span></div></section>`;
+}
+function nowPlaying(live) {
+  const current = live.current;
+  return `<section class="now-playing" aria-label="Now playing"><div class="eyebrow">${live.paused ? 'Paused' : 'Now playing'}</div>${current ? `<div class="now-track">${artwork(current.track)}<div class="track-info"><h2>${esc(current.track.title)}</h2><p>${esc(current.track.artist)} · Requested by ${esc(current.requestedBy)}</p></div></div><div class="playback-progress"><progress max="${Math.max(1, current.track.durationMs)}" value="${live.positionMs}" aria-label="Playback progress"></progress><span id="live-position">${duration(live.positionMs)} / ${current.track.isStream ? 'LIVE' : duration(current.track.durationMs)}</span></div>` : '<p>The player is waiting for its next song.</p>'}<div class="live-controls">${button(live.paused ? 'Resume' : 'Pause', live.paused ? 'play' : 'pause', 'live-pause')}${button(live.permissions.voteSkip ? 'Vote to skip' : 'Skip song', 'next', 'live-skip')}<form id="volume-form"><label for="volume">Volume</label><input id="volume" name="volume" type="number" min="1" max="200" value="${live.volume}" required aria-label="Volume percent"/><button class="btn" type="submit" data-live-control>Set</button></form></div></section>`;
+}
 function playlistPage() {
   const { playlist, tracks } = state.current;
+  const live = state.current.live;
   const minutes = Math.ceil(tracks.reduce((sum, entry) => sum + entry.track.durationMs, 0) / 60000);
   return `<div class="content-grid"><section class="playlist-main" aria-label="Playlist editor">
-    <div class="hero"><div class="cover" aria-hidden="true"><div class="vinyl"></div></div><div class="hero-copy"><div class="eyebrow">Your playlist · ${playlist.isShared ? 'Shared' : 'Private'}</div><h1>${esc(playlist.name)}</h1><div class="hero-meta"><span>${esc(state.session.user.name)}</span><span>·</span><span>${plural(tracks.length, 'song')}</span><span>·</span><span>${minutes} min${tracks.some((entry) => entry.track.isStream) ? ' + live' : ''}</span></div></div></div>
-    <div class="actions">${button('Add songs', 'plus', 'find', 'primary')}${button('Play in Discord', 'play', 'play')}${button('Import link', 'import', 'import')}<button class="icon-btn" data-action="shuffle" aria-label="Shuffle playlist" title="Shuffle playlist">${icon('shuffle')}</button><button class="icon-btn" data-action="share" aria-label="Share playlist" title="Share playlist">${icon('share')}</button><button class="icon-btn" data-action="refresh" aria-label="Refresh playlist" title="Refresh playlist">${icon('refresh')}</button></div>
-    <div class="section-head"><h2>The tracklist <small id="track-count">${tracks.length}</small></h2><label class="filter-box">${icon('search')}<span class="sr-only">Filter songs in this playlist</span><input id="filter" type="search" placeholder="Filter this playlist" value="${esc(state.filter)}" /></label></div>
+    ${live ? `<div class="live-session-head"><div class="eyebrow">Listening together · Updates every 5 seconds</div><label for="live-session">Your voice session</label><select id="live-session">${state.liveSessions.map((session) => `<option value="${session.id}" ${session.id === live.id ? 'selected' : ''}>${esc(session.guildName)} / ${esc(session.voiceName)}</option>`).join('')}</select></div>${nowPlaying(live)}${!live.permissions.control ? '<p class="access-note">You can follow the queue. The configured DJ role or Manage Server is needed to edit it.</p>' : ''}${live.pendingImports ? `<p class="access-note">${plural(live.pendingImports, 'import')} still adding songs.</p>` : ''}` : `<div class="hero"><div class="cover" aria-hidden="true"><div class="vinyl"></div></div><div class="hero-copy"><div class="eyebrow">Your playlist · ${playlist.isShared ? 'Shared' : 'Private'}</div><h1>${esc(playlist.name)}</h1><div class="hero-meta"><span>${esc(state.session.user.name)}</span><span>·</span><span>${plural(tracks.length, 'song')}</span><span>·</span><span>${minutes} min${tracks.some((entry) => entry.track.isStream) ? ' + live' : ''}</span></div></div></div>`}
+    <div class="actions">${button('Add songs', 'plus', 'find', 'primary')}${live ? button('Add saved playlist', 'music', 'queue-playlist') : button('Play in Discord', 'play', 'play')}${button('Import link', 'import', 'import')}<button class="icon-btn" data-action="shuffle" aria-label="Shuffle playlist" title="Shuffle playlist">${icon('shuffle')}</button>${!live ? `<button class="icon-btn" data-action="share" aria-label="Share playlist" title="Share playlist">${icon('share')}</button>` : ''}<button class="icon-btn" data-action="refresh" aria-label="Refresh playlist" title="Refresh playlist">${icon('refresh')}</button></div>
+    <div class="section-head"><h2>${live ? 'Up next' : 'The tracklist'} <small id="track-count">${tracks.length}</small></h2><label class="filter-box">${icon('search')}<span class="sr-only">Filter songs in this playlist</span><input id="filter" type="search" placeholder="Filter ${live ? 'the queue' : 'this playlist'}" value="${esc(state.filter)}" /></label></div>
     <div id="selection"></div><div id="tracks" class="track-list" aria-label="Playlist tracks"></div>
     <p class="list-note">${icon('check')}<span id="save-status">All changes saved · Drag the handle or use the arrow buttons to reorder.</span></p>
-    <div class="secondary-actions"><button class="text-btn" data-action="rename">Rename playlist</button><button class="text-btn" data-action="dedupe">Remove duplicates</button><button class="text-btn" data-action="export">Export JSON</button><button class="text-btn" data-action="delete">Delete playlist</button></div>
+    <div class="secondary-actions">${live ? '<button class="text-btn" data-action="live-undo">Undo queue edit</button><button class="text-btn" data-action="save-queue">Save as playlist</button><button class="text-btn" data-action="clear-queue">Clear upcoming songs</button>' : '<button class="text-btn" data-action="rename">Rename playlist</button>'}<button class="text-btn" data-action="dedupe">Remove duplicates</button><button class="text-btn" data-action="export">Export JSON</button>${!live ? '<button class="text-btn" data-action="delete">Delete playlist</button>' : ''}</div>
     </section>
     <aside class="search-panel" aria-labelledby="search-title"><div class="eyebrow">Keep the good songs coming</div><h2 id="search-title">Find your next favorite</h2><p>Search a title or artist. Add it to your mix.</p>
       <form id="search-form"><label class="search-field">${icon('search')}<span class="sr-only">Search music</span><input id="search" type="search" placeholder="A song, an artist, a feeling…" value="${esc(state.searchQuery)}" maxlength="300" required/><button aria-label="Search">${icon('arrow')}</button></label><div class="source-row"><label for="source">Search on</label><select id="source"><option value="ytsearch" ${state.source === 'ytsearch' ? 'selected' : ''}>YouTube</option><option value="scsearch" ${state.source === 'scsearch' ? 'selected' : ''}>SoundCloud</option></select><span><span class="kbd">Ctrl</span> <span class="kbd">K</span></span></div></form>
@@ -150,21 +166,113 @@ function renderResults() {
   syncBusy();
 }
 function syncBusy() {
+  const live = state.current?.live;
+  const controls = new Set([
+    'find',
+    'import',
+    'shuffle',
+    'dedupe',
+    'queue-playlist',
+    'clear-queue',
+    'live-undo',
+    'live-pause',
+    'remove-selected',
+  ]);
   for (const element of document.querySelectorAll(
-    '[data-action], [data-playlist], [data-add], [data-move], [data-remove], [data-select]',
+    '[data-action], [data-playlist], [data-add], [data-move], [data-remove], [data-select], [data-live-control]',
   )) {
     if (!element.dataset.wasDisabled) element.dataset.wasDisabled = element.disabled ? 'yes' : 'no';
-    element.disabled = state.busy || element.dataset.wasDisabled === 'yes';
+    const requiresControl =
+      controls.has(element.dataset.action) ||
+      ['add', 'move', 'remove', 'select'].some((key) => key in element.dataset) ||
+      element.hasAttribute('data-live-control');
+    element.disabled =
+      state.busy ||
+      element.dataset.wasDisabled === 'yes' ||
+      Boolean(live && requiresControl && !live.permissions.control) ||
+      Boolean(
+        live &&
+        element.dataset.action === 'live-skip' &&
+        (!live.permissions.skip || !live.current || !live.playbackId),
+      ) ||
+      Boolean(
+        live && element.dataset.action === 'live-pause' && (!live.current || !live.playbackId),
+      );
   }
   const status = document.querySelector('#save-status');
   if (status)
     status.textContent = state.busy
       ? 'Saving your changes…'
-      : 'All changes saved · Drag the handle or use the arrow buttons to reorder.';
+      : `${live ? 'Changes apply to Discord immediately' : 'All changes saved'} · Drag the handle or use the arrow buttons to reorder.`;
+}
+function collectionPath() {
+  return state.current.live
+    ? `/api/live/${state.current.live.id}`
+    : `/api/playlists/${state.current.playlist.id}`;
+}
+async function refreshLive(poll = false) {
+  const request = ++liveRequest;
+  const data = await api('/api/live');
+  if (request !== liveRequest || state.mode !== 'live' || !state.session?.user) return;
+  state.liveSessions = data.sessions;
+  const selected = data.sessions.find((item) => item.id === state.liveId) || data.sessions[0];
+  if (!selected) {
+    state.liveId = null;
+    state.current = null;
+    render();
+    return;
+  }
+  state.liveId = selected.id;
+  try {
+    const live = await api(`/api/live/${selected.id}`);
+    if (
+      request !== liveRequest ||
+      state.mode !== 'live' ||
+      !state.session?.user ||
+      (poll &&
+        (state.busy ||
+          dialog.open ||
+          draggedId ||
+          document.activeElement?.matches('input, select')))
+    )
+      return;
+    const previous = state.current?.live;
+    state.current = {
+      playlist: { id: live.id, name: live.voiceName },
+      tracks: live.upcoming,
+      live,
+    };
+    const ids = new Set(live.upcoming.map((entry) => entry.id));
+    state.selected = new Set([...state.selected].filter((id) => ids.has(id)));
+    if (
+      poll &&
+      previous &&
+      JSON.stringify({ ...previous, positionMs: 0 }) === JSON.stringify({ ...live, positionMs: 0 })
+    ) {
+      const progress = document.querySelector('.playback-progress progress');
+      const position = document.querySelector('#live-position');
+      if (progress) progress.value = live.positionMs;
+      if (position && live.current)
+        position.textContent = `${duration(live.positionMs)} / ${live.current.track.isStream ? 'LIVE' : duration(live.current.track.durationMs)}`;
+      return;
+    }
+    state.liveError = '';
+    render();
+  } catch (error) {
+    if (request !== liveRequest || state.mode !== 'live') return;
+    if (error.status !== 403 && error.status !== 404) throw error;
+    state.current = null;
+    state.liveError = error.message;
+    render();
+  }
 }
 async function refresh(id = state.current?.playlist.id) {
   const data = await api('/api/playlists');
   state.playlists = data.playlists;
+  if (state.mode === 'live') {
+    await refreshLive();
+    return;
+  }
   const selected = state.playlists.find((playlist) => playlist.id === id) || state.playlists[0];
   state.current = selected ? await api(`/api/playlists/${selected.id}`) : null;
   const ids = new Set(state.current?.tracks.map((entry) => entry.id));
@@ -174,13 +282,14 @@ async function refresh(id = state.current?.playlist.id) {
 async function mutate(operation, message) {
   if (state.busy) return;
   state.busy = true;
+  liveRequest++;
   syncBusy();
   try {
     await operation();
     await refresh();
     if (message) notice(message);
   } catch (error) {
-    if (error.status === 409 || error.status === 404) await refresh();
+    if ([403, 409, 404].includes(error.status)) await refresh();
     notice(error.message, true);
   } finally {
     state.busy = false;
@@ -189,11 +298,11 @@ async function mutate(operation, message) {
 }
 async function updateOrder(entries, message = 'Playlist updated') {
   if (state.busy || !state.current) return;
-  const id = state.current.playlist.id;
+  const path = collectionPath();
   const expectedIds = state.current.tracks.map((entry) => entry.id);
   await mutate(
     () =>
-      api(`/api/playlists/${id}/tracks`, 'PUT', {
+      api(`${path}/tracks`, 'PUT', {
         expectedIds,
         orderedIds: entries.map((entry) => entry.id),
       }),
@@ -228,6 +337,81 @@ async function copy(text) {
   }
 }
 const actions = {
+  async live() {
+    state.mode = 'live';
+    state.filter = '';
+    state.selected.clear();
+    state.liveError = '';
+    await mutate(async () => {});
+  },
+  async 'live-pause'() {
+    const live = state.current.live;
+    await mutate(async () => {
+      const data = await api(`${collectionPath()}/actions`, 'POST', {
+        action: 'pause',
+        paused: !live.paused,
+        playbackId: live.playbackId,
+      });
+      notice(data.message);
+    });
+  },
+  async 'live-skip'() {
+    const live = state.current.live;
+    await mutate(async () => {
+      const data = await api(`${collectionPath()}/actions`, 'POST', {
+        action: 'skip',
+        playbackId: live.playbackId,
+      });
+      notice(data.message);
+    });
+  },
+  async 'live-undo'() {
+    await mutate(async () => {
+      const data = await api(`${collectionPath()}/actions`, 'POST', { action: 'undo' });
+      notice(data.message);
+    });
+  },
+  'queue-playlist'() {
+    if (!state.playlists.length) {
+      notice('Create a saved playlist in your library first.');
+      return;
+    }
+    const path = collectionPath();
+    openDialog(
+      'Add a saved playlist',
+      `<p>Append its songs to the live Discord queue.</p><label for="queue-playlist">Your playlist</label><select id="queue-playlist" name="playlist">${state.playlists.map((playlist) => `<option value="${playlist.id}">${esc(playlist.name)}</option>`).join('')}</select>`,
+      'Add to queue',
+      async (form) => {
+        const result = await api(`${path}/playlist`, 'POST', { playlistId: form.get('playlist') });
+        await refresh();
+        notice(`Queued ${plural(result.added, 'song')}`);
+      },
+    );
+  },
+  'save-queue'() {
+    const path = collectionPath();
+    openDialog(
+      'Keep this listening session',
+      '<p>Save the current song and upcoming tracks as a new personal playlist.</p><label for="name">Playlist name</label><input id="name" name="name" placeholder="Tonight’s mix" maxlength="64" required autofocus/>',
+      'Save playlist',
+      async (form) => {
+        await api(`${path}/save`, 'POST', { name: form.get('name'), includeCurrent: true });
+        await refresh();
+        notice('Queue saved to your playlist library');
+      },
+    );
+  },
+  'clear-queue'() {
+    const entries = state.current.tracks;
+    if (!entries.length) return notice('The upcoming queue is already empty');
+    openDialog(
+      'Clear upcoming songs?',
+      `<p>Remove ${plural(entries.length, 'song')} from the upcoming queue. The current song keeps playing.</p>`,
+      'Clear upcoming',
+      () => updateOrder([], 'Upcoming queue cleared'),
+      true,
+    );
+  },
   find() {
     const search = document.querySelector('#search');
     search?.focus({ preventScroll: true });
@@ -243,6 +427,7 @@ const actions = {
         const data = await api('/api/playlists', 'POST', { name: form.get('name') });
         state.filter = '';
         state.selected.clear();
+        state.mode = 'library';
         await refresh(data.playlist.id);
         notice('Your new playlist is ready');
       },
@@ -278,13 +463,13 @@ const actions = {
     );
   },
   import() {
-    const id = state.current.playlist.id;
+    const path = collectionPath();
     openDialog(
       'Bring your music along',
       '<p>Paste a public Spotify, YouTube, or SoundCloud song or playlist link. Tracks are appended to this playlist.</p><label for="link">Music link</label><input id="link" name="link" type="url" placeholder="https://open.spotify.com/playlist/…" required autofocus/><small>Large imports can take a little while. Your bot’s import and playlist limits apply.</small>',
       'Import tracks',
       async (form) => {
-        const result = await api(`/api/playlists/${id}/import`, 'POST', { url: form.get('link') });
+        const result = await api(`${path}/import`, 'POST', { url: form.get('link') });
         await refresh();
         notice(`Added ${plural(result.added, 'song')}`);
       },
@@ -322,7 +507,7 @@ const actions = {
     return updateOrder(entries, 'Playlist shuffled');
   },
   dedupe() {
-    const seen = new Set();
+    const seen = new Set(state.current.live?.current ? [state.current.live.current.track.key] : []);
     const entries = state.current.tracks.filter((entry) => {
       if (seen.has(entry.track.key)) return false;
       seen.add(entry.track.key);
@@ -373,6 +558,9 @@ const actions = {
     state.session.user = null;
     state.playlists = [];
     state.current = null;
+    state.liveSessions = [];
+    state.liveId = null;
+    state.mode = 'library';
     state.results = [];
     render();
   },
@@ -394,14 +582,15 @@ document.addEventListener('click', (event) => {
     if (target.dataset.action && actions[target.dataset.action])
       await actions[target.dataset.action]();
     else if (target.dataset.playlist) {
+      state.mode = 'library';
       state.filter = '';
       state.selected.clear();
       await mutate(() => refresh(target.dataset.playlist));
     } else if (target.dataset.add) {
-      const id = state.current.playlist.id;
+      const path = collectionPath();
       await mutate(
-        () => api(`/api/playlists/${id}/tracks`, 'POST', { resultId: target.dataset.add }),
-        'Song added to your playlist',
+        () => api(`${path}/tracks`, 'POST', { resultId: target.dataset.add }),
+        state.current.live ? 'Song added to the Discord queue' : 'Song added to your playlist',
       );
     } else if (target.dataset.remove)
       await updateOrder(
@@ -432,6 +621,12 @@ document.addEventListener('input', (event) => {
   if (event.target.id === 'search') state.searchQuery = event.target.value;
 });
 document.addEventListener('change', (event) => {
+  if (event.target.id === 'live-session') {
+    state.liveId = event.target.value;
+    state.filter = '';
+    state.selected.clear();
+    void mutate(async () => {}).catch((error) => notice(error.message, true));
+  }
   if (event.target.dataset.select) {
     if (event.target.checked) state.selected.add(event.target.dataset.select);
     else state.selected.delete(event.target.dataset.select);
@@ -440,6 +635,15 @@ document.addEventListener('change', (event) => {
   if (event.target.id === 'source') state.source = event.target.value;
 });
 document.addEventListener('submit', (event) => {
+  if (event.target.id === 'volume-form') {
+    event.preventDefault();
+    const volume = Number(new FormData(event.target).get('volume'));
+    void mutate(async () => {
+      const data = await api(`${collectionPath()}/actions`, 'POST', { action: 'volume', volume });
+      notice(data.message);
+    });
+    return;
+  }
   if (event.target.id !== 'search-form') return;
   event.preventDefault();
   const query = state.searchQuery.trim();
@@ -476,7 +680,7 @@ document.addEventListener('keydown', (event) => {
 });
 document.addEventListener('dragstart', (event) => {
   const handle = event.target.closest('.grip');
-  if (!handle || state.busy) {
+  if (!handle || state.busy || (state.current?.live && !state.current.live.permissions.control)) {
     event.preventDefault();
     return;
   }
@@ -525,10 +729,33 @@ document.addEventListener(
 async function start() {
   try {
     state.session = await api('/api/session');
-    if (state.session.user) await refresh();
-    else render();
+    if (state.session.user) {
+      const data = await api('/api/live');
+      state.liveSessions = data.sessions;
+      if (data.sessions.length) state.mode = 'live';
+      await refresh();
+    } else render();
   } catch (error) {
     app.innerHTML = `<div class="boot" role="alert">${esc(error.message)} <a href="/">Try again</a></div>`;
   }
 }
 void start();
+setInterval(() => {
+  if (
+    !state.session?.user ||
+    state.mode !== 'live' ||
+    state.busy ||
+    state.refreshing ||
+    dialog.open ||
+    draggedId ||
+    document.hidden ||
+    document.activeElement?.matches('input, select')
+  )
+    return;
+  state.refreshing = true;
+  void refreshLive(true)
+    .catch((error) => notice(error.message, true))
+    .finally(() => {
+      state.refreshing = false;
+    });
+}, 5000);

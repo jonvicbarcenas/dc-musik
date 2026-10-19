@@ -245,10 +245,12 @@ export class PlayerManager extends EventEmitter<EngineEvents> {
     items: readonly ResolvedItem[],
     requester: Requester,
     mode: 'append' | 'next' | 'now' = 'append',
+    guard?: () => void,
   ): Promise<number> {
     const session = this.require(guildId);
     requesterSchema.parse(requester);
     await this.locked(session, async () => {
+      guard?.();
       const entries = items.map((item) => {
         this.validateLength(session, item.track.durationMs, item.track.isStream);
         return createQueueEntry(item.track, requester, item.playable);
@@ -310,9 +312,11 @@ export class PlayerManager extends EventEmitter<EngineEvents> {
     guildId: string,
     operation: (queue: QueueManager) => T,
     expectedPlaybackId?: string,
+    guard?: () => void,
   ): Promise<T> {
     const session = this.require(guildId);
     const value = await this.locked(session, async () => {
+      guard?.();
       this.assertPlayback(session, expectedPlaybackId);
       const before = session.queue.view();
       try {
@@ -334,9 +338,15 @@ export class PlayerManager extends EventEmitter<EngineEvents> {
     return value;
   }
 
-  async pause(guildId: string, paused: boolean, expectedPlaybackId?: string): Promise<void> {
+  async pause(
+    guildId: string,
+    paused: boolean,
+    expectedPlaybackId?: string,
+    guard?: () => void,
+  ): Promise<void> {
     const session = this.require(guildId);
     await this.locked(session, async () => {
+      guard?.();
       this.assertPlayback(session, expectedPlaybackId);
       this.requireCurrent(session);
       this.capturePosition(session);
@@ -368,10 +378,16 @@ export class PlayerManager extends EventEmitter<EngineEvents> {
     });
   }
 
-  async skip(guildId: string, count = 1, expectedPlaybackId?: string): Promise<void> {
+  async skip(
+    guildId: string,
+    count = 1,
+    expectedPlaybackId?: string,
+    guard?: () => void,
+  ): Promise<void> {
     const session = this.require(guildId);
     if (!expectedPlaybackId) session.resolution?.abort();
     await this.locked(session, async () => {
+      guard?.();
       if (expectedPlaybackId && session.state.currentPlaybackId !== expectedPlaybackId)
         throw new MusicError('CONFLICT', 'The current track changed. Try the command again.');
       this.requireCurrent(session);
@@ -509,11 +525,17 @@ export class PlayerManager extends EventEmitter<EngineEvents> {
     });
   }
 
-  async volume(guildId: string, volume: number, expectedPlaybackId?: string): Promise<void> {
+  async volume(
+    guildId: string,
+    volume: number,
+    expectedPlaybackId?: string,
+    guard?: () => void,
+  ): Promise<void> {
     if (!Number.isInteger(volume) || volume < 1 || volume > 200)
       throw new MusicError('INVALID_INPUT', 'Volume must be between 1 and 200.');
     const session = this.require(guildId);
     await this.locked(session, async () => {
+      guard?.();
       this.assertPlayback(session, expectedPlaybackId);
       await this.transport.volume(guildId, volume);
       session.settings = await this.repositories.guildSettings.update(guildId, {

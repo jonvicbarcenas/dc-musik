@@ -5,6 +5,7 @@ import { MemoryCache, RedisCache } from './lib/cache/Cache.js';
 import { MediaBridge } from './lib/security/MediaBridge.js';
 import { HealthServer } from './lib/runtime/HealthServer.js';
 import { Dashboard } from './lib/web/Dashboard.js';
+import { LiveQueue, discordLiveAccount } from './lib/web/LiveQueue.js';
 import { MultiBotCoordinator } from './lib/advanced/MultiBotCoordinator.js';
 import { createBot } from './bot.js';
 import type { BotRuntime } from './bot.js';
@@ -137,6 +138,10 @@ async function main(): Promise<void> {
         repositories,
         resolver: () => bots.find((bot) => bot.ready())?.services.players.resolver,
         importLimit: env.MAX_PLAYLIST_IMPORT,
+        live: new LiveQueue(
+          () => bots.map((bot) => discordLiveAccount(bot.services)),
+          repositories,
+        ),
       });
     const shared = {
       env,
