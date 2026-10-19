@@ -150,6 +150,14 @@ full playlist has not been verified. It can change or fail upstream and does not
 handle private playlists. Set this variable to `false` in **bot** Variables to use
 only the API. Spotify's [terms restrict unauthorized automated retrieval](https://developer.spotify.com/terms#section-iv-restrictions).
 
+Spotify-generated song radio can also import a public snapshot when the API denies
+the playlist metadata itself. The bot requires a recognized radio ID plus a matching
+unsigned public radio entity. Explicit private/unknown API visibility remains
+blocked. Radio imports show a notice: the visible list may differ from personalized
+Spotify radio and does not keep adding songs automatically. Snapshots are cached
+for one minute and remain capped at 100 visible entries. Deploy the updated **bot**
+service to enable this fix; no new variables or Lavalink changes are needed.
+
 ## Troubleshooting
 
 | Symptom                           | Check                                                                                                                                                    |

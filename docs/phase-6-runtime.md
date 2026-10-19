@@ -125,7 +125,7 @@ access.
 
 `SPOTIFY_PUBLIC_PLAYLIST_FALLBACK=true` enables an experimental fallback for other
 public playlists when the first items request is denied. The API must first confirm
-`public: true`; false/unknown visibility is blocked. The bot reads the unsigned
+`public: true`; explicit false/unknown visibility is blocked. The bot reads the unsigned
 Spotify embed page, validates its playlist identity and imports up to 100 visible
 track entries. It uses only title, artist, canonical track URL and full duration;
 embedded tokens, cookies and audio previews are ignored. Playback still uses the
@@ -133,12 +133,22 @@ existing full-track mirror matching. This source is not a documented metadata AP
 and may omit tracks or change layout. Spotify's [Developer Terms](https://developer.spotify.com/terms#section-iv-restrictions)
 restrict unauthorized automated retrieval, including playlist data.
 
+Spotify-generated song radio has a narrow exception when the API denies playlist
+metadata itself. For a radio ID beginning `37i9dQZF1E8`, the unsigned embed must
+independently expose the exact requested playlist URI, playlist entity type and
+`inspiredby-mix` format. Only then can it supply a public radio snapshot. An API
+response explicitly marking visibility false or unknown still blocks the import.
+An API rate limit, server error or network failure does not activate this path.
+The snapshot notice explains that its visible tracks may differ from personalized
+Spotify radio and that importing it does not keep adding new radio tracks.
+
 Queue and personal-library imports show an incomplete-source notice and keep the
 full playlist total unknown. Only parsed metadata is cached for fifteen minutes,
-with a bounded cache. A blocked/rate-limited page is not retried or worked around.
+or one minute for radio snapshots, with a bounded cache. A blocked/rate-limited page
+is not retried or worked around.
 Fallback never switches sources after a successful API page, so later errors cannot
 duplicate an import. Set the variable to `false` to require the API path exclusively.
-Public metadata confirmation still needs working Spotify application credentials.
+Ordinary public-playlist confirmation still needs working Spotify application credentials.
 
 Authorization uses PKCE and a random verified callback state, a loopback-only
 listener and a fifteen-minute timeout. Refresh credentials rotate atomically under
@@ -347,7 +357,7 @@ Local checks cover controller actions, stale playback races, expired/actor-bound
 menus, DM pagination, help permission changes, embed bounds, timed lyrics, health
 HTTP, serialized edits, event draining, natural completion, kicks, account selection,
 shard session ownership, concurrent restoration, cancelled startup, and readiness.
-All **249 local checks** pass: 51 engine checks, 92 command checks, and 106 runtime/UI/
+All **267 local checks** pass: 51 engine checks, 92 command checks, and 124 runtime/UI/
 authorization checks including safe startup diagnostics. Temporary checks are under ignored
 `data/phase-6-verification`; Phase 7 promotes them into the permanent test suite.
 
@@ -359,10 +369,13 @@ slash webhook expiry and shutdown. These checks use fixture lyrics and Discord
 message doubles; a live provider and audible Discord playback still need trying
 with `/lyrics` in the deployed bot.
 
-Eighteen public-playlist checks cover metadata-only parsing, omitted previews/auth
+Thirty-six public-playlist checks cover metadata-only parsing, omitted previews/auth
 state, the visible-entry cap, malformed/login pages, playlist identity, API preference,
 private/unknown visibility, opt-out, source denial/rate limits, temporary caching,
-cancellation and personal-library warnings. An engine regression verifies the
+cancellation and personal-library warnings. Radio cases additionally check denied
+metadata, matching radio IDs/formats, explicit private/unknown visibility, snapshot
+notices, ordered bounded pages, opt-out, cancellation, rate/server/network failures,
+unavailable public metadata and the one-minute cache. An engine regression verifies the
 incomplete-source notice is delivered once without changing queue order. The
 production catalog path also imported 84 visible entries from public playlist
 `4i7Aahy42GS7ycM9nHO3pr` in pages of 5, 50 and 29, with one warning and an unknown
@@ -370,6 +383,14 @@ full total. That read-only probe used application credentials, did not refresh u
 credentials, did not request audio and did not connect Discord voice. It verifies
 the public metadata fallback, not completeness of the full playlist or availability
 of every mirrored song.
+
+The same production catalog path imported 50 public radio tracks from
+`37i9dQZF1E8LSWUaMsKuB7` after its API metadata returned HTTP 404. The unsigned embed
+returned HTTP 200, producing pages of 5 and 45 with one snapshot notice and an
+unknown full total. This probe used only application credentials for the API,
+did not refresh user credentials, request audio or connect Discord voice. It
+verifies this radio's public metadata snapshot; playback of its matched songs still
+requires the deployed bot's audio sources.
 
 An actual local Lavalink 4.2.2 with all four configured plugins passed initial event
 readiness, session initialization, authenticated WAV loading, a real process restart,

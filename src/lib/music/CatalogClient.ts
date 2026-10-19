@@ -5,7 +5,8 @@ import { MusicError } from '../utils/errors.js';
 import type { CatalogPage, RawTrack } from './types.js';
 import { toResolvedItem } from './TrackCodec.js';
 import { SpotifyUserAuth, spotifySignInRequired } from './SpotifyUserAuth.js';
-import { SpotifyPublicPlaylist } from './SpotifyPublicPlaylist.js';
+import { isSpotifyRadioId, SpotifyPublicPlaylist } from './SpotifyPublicPlaylist.js';
+import type { PublicPlaylist } from './SpotifyPublicPlaylist.js';
 
 export function object(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -152,7 +153,19 @@ export class CatalogClient {
       kind === 'playlist' &&
       (this.env.SPOTIFY_REFRESH_TOKEN || this.env.SPOTIFY_PUBLIC_PLAYLIST_FALLBACK !== false)
     ) {
-      const playlist = object(await this.spotifyRequest(root, signal));
+      let playlist: Record<string, unknown>;
+      try {
+        playlist = object(await this.spotifyRequest(root, signal));
+      } catch (error) {
+        if (!isSpotifyRadioId(id) || !this.canUsePublicPlaylist(error)) throw error;
+        signal?.throwIfAborted();
+        // Spotify radio metadata can be absent from the Web API. Only a matching,
+        // anonymously rendered radio entity provides an independent public snapshot.
+        const rendered = await this.publicPlaylist.get(id, signal);
+        if (!rendered?.spotifyRadio) throw error;
+        yield* this.publicSpotifyPages(rendered, limit, signal);
+        return;
+      }
       // The operator's authorization is shared by the bot; never disclose their private libraries.
       if (playlist['public'] !== true)
         throw new MusicError(
@@ -192,36 +205,13 @@ export class CatalogClient {
           kind !== 'playlist' ||
           offset !== 0 ||
           !publicPlaylist ||
-          this.env.SPOTIFY_PUBLIC_PLAYLIST_FALLBACK === false ||
-          !(error instanceof MusicError) ||
-          !['SPOTIFY_AUTH_REQUIRED', 'SPOTIFY_ACCESS_DENIED'].includes(error.code)
+          !this.canUsePublicPlaylist(error)
         )
           throw error;
         signal?.throwIfAborted();
         const rendered = await this.publicPlaylist.get(id, signal);
         if (!rendered) throw error;
-        const items = rendered.tracks.slice(0, limit).flatMap((track) => {
-          try {
-            return [toResolvedItem(track)];
-          } catch {
-            return [];
-          }
-        });
-        if (!items.length) throw error;
-        for (let index = 0; index < items.length; index += index === 0 ? 5 : 50) {
-          signal?.throwIfAborted();
-          yield {
-            name: rendered.name || playlistName,
-            items: items.slice(index, index + (index === 0 ? 5 : 50)),
-            total: null,
-            ...(index === 0
-              ? {
-                  notice:
-                    'Imported from Spotify’s public playlist view (up to 100 tracks). Longer playlists may be incomplete; the full playlist was not verified.',
-                }
-              : {}),
-          };
-        }
+        yield* this.publicSpotifyPages(rendered, limit, signal);
         return;
       }
       const records = array(response['items']);
@@ -236,6 +226,46 @@ export class CatalogClient {
       };
       offset += records.length;
       if (!response['next'] || records.length < size) return;
+    }
+  }
+  private canUsePublicPlaylist(error: unknown): boolean {
+    return (
+      this.env.SPOTIFY_PUBLIC_PLAYLIST_FALLBACK !== false &&
+      error instanceof MusicError &&
+      ['SPOTIFY_AUTH_REQUIRED', 'SPOTIFY_ACCESS_DENIED'].includes(error.code)
+    );
+  }
+  private *publicSpotifyPages(
+    playlist: PublicPlaylist,
+    limit: number,
+    signal?: AbortSignal,
+  ): Generator<CatalogPage> {
+    const items = playlist.tracks.slice(0, limit).flatMap((track) => {
+      try {
+        return [toResolvedItem(track)];
+      } catch {
+        return [];
+      }
+    });
+    if (!items.length)
+      throw new MusicError(
+        'NOT_FOUND',
+        'No playable metadata was found in the public playlist view.',
+      );
+    for (let index = 0; index < items.length; index += index === 0 ? 5 : 50) {
+      signal?.throwIfAborted();
+      yield {
+        name: playlist.name,
+        items: items.slice(index, index + (index === 0 ? 5 : 50)),
+        total: null,
+        ...(index === 0
+          ? {
+              notice: playlist.spotifyRadio
+                ? 'Imported a public Spotify radio snapshot (up to 100 tracks). It may differ from your personalized radio and does not keep refreshing automatically.'
+                : 'Imported from Spotify’s public playlist view (up to 100 tracks). Longer playlists may be incomplete; the full playlist was not verified.',
+            }
+          : {}),
+      };
     }
   }
   private spotifyItem(value: unknown) {

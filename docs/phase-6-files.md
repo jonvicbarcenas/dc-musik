@@ -5303,10 +5303,16 @@ const entitySchema = z.object({
   uri: z.string(),
   title: z.string().trim().min(1).max(1000),
   trackList: z.array(z.unknown()).max(5000),
+  format: z.unknown().optional(),
 });
 export interface PublicPlaylist {
   name: string;
   tracks: RawTrack[];
+  spotifyRadio: boolean;
+}
+
+export function isSpotifyRadioId(id: string): boolean {
+  return /^37i9dQZF1E8[A-Za-z0-9]{11}$/.test(id);
 }
 
 /** Only the unsigned, publicly rendered widget. Ignore preview URLs and all auth state. */
@@ -5336,7 +5342,10 @@ export class SpotifyPublicPlaylist {
         const oldest = this.cache.keys().next().value;
         if (oldest) this.cache.delete(oldest);
       }
-      this.cache.set(id, { expiresAt: Date.now() + 15 * 60_000, value });
+      this.cache.set(id, {
+        expiresAt: Date.now() + (value.spotifyRadio ? 60_000 : 15 * 60_000),
+        value,
+      });
       return value;
     } catch {
       signal?.throwIfAborted();
@@ -5387,7 +5396,11 @@ export function parsePublicPlaylist(html: string, id: string): PublicPlaylist | 
       isPreview: false,
     });
   }
-  return { name: parsed.data.title.slice(0, 300), tracks };
+  return {
+    name: parsed.data.title.slice(0, 300),
+    tracks,
+    spotifyRadio: isSpotifyRadioId(id) && parsed.data.format === 'inspiredby-mix',
+  };
 }
 ````
 
@@ -8009,7 +8022,8 @@ import { MusicError } from '../utils/errors.js';
 import type { CatalogPage, RawTrack } from './types.js';
 import { toResolvedItem } from './TrackCodec.js';
 import { SpotifyUserAuth, spotifySignInRequired } from './SpotifyUserAuth.js';
-import { SpotifyPublicPlaylist } from './SpotifyPublicPlaylist.js';
+import { isSpotifyRadioId, SpotifyPublicPlaylist } from './SpotifyPublicPlaylist.js';
+import type { PublicPlaylist } from './SpotifyPublicPlaylist.js';
 
 export function object(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -8156,7 +8170,19 @@ export class CatalogClient {
       kind === 'playlist' &&
       (this.env.SPOTIFY_REFRESH_TOKEN || this.env.SPOTIFY_PUBLIC_PLAYLIST_FALLBACK !== false)
     ) {
-      const playlist = object(await this.spotifyRequest(root, signal));
+      let playlist: Record<string, unknown>;
+      try {
+        playlist = object(await this.spotifyRequest(root, signal));
+      } catch (error) {
+        if (!isSpotifyRadioId(id) || !this.canUsePublicPlaylist(error)) throw error;
+        signal?.throwIfAborted();
+        // Spotify radio metadata can be absent from the Web API. Only a matching,
+        // anonymously rendered radio entity provides an independent public snapshot.
+        const rendered = await this.publicPlaylist.get(id, signal);
+        if (!rendered?.spotifyRadio) throw error;
+        yield* this.publicSpotifyPages(rendered, limit, signal);
+        return;
+      }
       // The operator's authorization is shared by the bot; never disclose their private libraries.
       if (playlist['public'] !== true)
         throw new MusicError(
@@ -8196,36 +8222,13 @@ export class CatalogClient {
           kind !== 'playlist' ||
           offset !== 0 ||
           !publicPlaylist ||
-          this.env.SPOTIFY_PUBLIC_PLAYLIST_FALLBACK === false ||
-          !(error instanceof MusicError) ||
-          !['SPOTIFY_AUTH_REQUIRED', 'SPOTIFY_ACCESS_DENIED'].includes(error.code)
+          !this.canUsePublicPlaylist(error)
         )
           throw error;
         signal?.throwIfAborted();
         const rendered = await this.publicPlaylist.get(id, signal);
         if (!rendered) throw error;
-        const items = rendered.tracks.slice(0, limit).flatMap((track) => {
-          try {
-            return [toResolvedItem(track)];
-          } catch {
-            return [];
-          }
-        });
-        if (!items.length) throw error;
-        for (let index = 0; index < items.length; index += index === 0 ? 5 : 50) {
-          signal?.throwIfAborted();
-          yield {
-            name: rendered.name || playlistName,
-            items: items.slice(index, index + (index === 0 ? 5 : 50)),
-            total: null,
-            ...(index === 0
-              ? {
-                  notice:
-                    'Imported from Spotify’s public playlist view (up to 100 tracks). Longer playlists may be incomplete; the full playlist was not verified.',
-                }
-              : {}),
-          };
-        }
+        yield* this.publicSpotifyPages(rendered, limit, signal);
         return;
       }
       const records = array(response['items']);
@@ -8240,6 +8243,46 @@ export class CatalogClient {
       };
       offset += records.length;
       if (!response['next'] || records.length < size) return;
+    }
+  }
+  private canUsePublicPlaylist(error: unknown): boolean {
+    return (
+      this.env.SPOTIFY_PUBLIC_PLAYLIST_FALLBACK !== false &&
+      error instanceof MusicError &&
+      ['SPOTIFY_AUTH_REQUIRED', 'SPOTIFY_ACCESS_DENIED'].includes(error.code)
+    );
+  }
+  private *publicSpotifyPages(
+    playlist: PublicPlaylist,
+    limit: number,
+    signal?: AbortSignal,
+  ): Generator<CatalogPage> {
+    const items = playlist.tracks.slice(0, limit).flatMap((track) => {
+      try {
+        return [toResolvedItem(track)];
+      } catch {
+        return [];
+      }
+    });
+    if (!items.length)
+      throw new MusicError(
+        'NOT_FOUND',
+        'No playable metadata was found in the public playlist view.',
+      );
+    for (let index = 0; index < items.length; index += index === 0 ? 5 : 50) {
+      signal?.throwIfAborted();
+      yield {
+        name: playlist.name,
+        items: items.slice(index, index + (index === 0 ? 5 : 50)),
+        total: null,
+        ...(index === 0
+          ? {
+              notice: playlist.spotifyRadio
+                ? 'Imported a public Spotify radio snapshot (up to 100 tracks). It may differ from your personalized radio and does not keep refreshing automatically.'
+                : 'Imported from Spotify’s public playlist view (up to 100 tracks). Longer playlists may be incomplete; the full playlist was not verified.',
+            }
+          : {}),
+      };
     }
   }
   private spotifyItem(value: unknown) {
@@ -9127,7 +9170,7 @@ access.
 
 `SPOTIFY_PUBLIC_PLAYLIST_FALLBACK=true` enables an experimental fallback for other
 public playlists when the first items request is denied. The API must first confirm
-`public: true`; false/unknown visibility is blocked. The bot reads the unsigned
+`public: true`; explicit false/unknown visibility is blocked. The bot reads the unsigned
 Spotify embed page, validates its playlist identity and imports up to 100 visible
 track entries. It uses only title, artist, canonical track URL and full duration;
 embedded tokens, cookies and audio previews are ignored. Playback still uses the
@@ -9135,12 +9178,22 @@ existing full-track mirror matching. This source is not a documented metadata AP
 and may omit tracks or change layout. Spotify's [Developer Terms](https://developer.spotify.com/terms#section-iv-restrictions)
 restrict unauthorized automated retrieval, including playlist data.
 
+Spotify-generated song radio has a narrow exception when the API denies playlist
+metadata itself. For a radio ID beginning `37i9dQZF1E8`, the unsigned embed must
+independently expose the exact requested playlist URI, playlist entity type and
+`inspiredby-mix` format. Only then can it supply a public radio snapshot. An API
+response explicitly marking visibility false or unknown still blocks the import.
+An API rate limit, server error or network failure does not activate this path.
+The snapshot notice explains that its visible tracks may differ from personalized
+Spotify radio and that importing it does not keep adding new radio tracks.
+
 Queue and personal-library imports show an incomplete-source notice and keep the
 full playlist total unknown. Only parsed metadata is cached for fifteen minutes,
-with a bounded cache. A blocked/rate-limited page is not retried or worked around.
+or one minute for radio snapshots, with a bounded cache. A blocked/rate-limited page
+is not retried or worked around.
 Fallback never switches sources after a successful API page, so later errors cannot
 duplicate an import. Set the variable to `false` to require the API path exclusively.
-Public metadata confirmation still needs working Spotify application credentials.
+Ordinary public-playlist confirmation still needs working Spotify application credentials.
 
 Authorization uses PKCE and a random verified callback state, a loopback-only
 listener and a fifteen-minute timeout. Refresh credentials rotate atomically under
@@ -9349,7 +9402,7 @@ Local checks cover controller actions, stale playback races, expired/actor-bound
 menus, DM pagination, help permission changes, embed bounds, timed lyrics, health
 HTTP, serialized edits, event draining, natural completion, kicks, account selection,
 shard session ownership, concurrent restoration, cancelled startup, and readiness.
-All **249 local checks** pass: 51 engine checks, 92 command checks, and 106 runtime/UI/
+All **267 local checks** pass: 51 engine checks, 92 command checks, and 124 runtime/UI/
 authorization checks including safe startup diagnostics. Temporary checks are under ignored
 `data/phase-6-verification`; Phase 7 promotes them into the permanent test suite.
 
@@ -9361,10 +9414,13 @@ slash webhook expiry and shutdown. These checks use fixture lyrics and Discord
 message doubles; a live provider and audible Discord playback still need trying
 with `/lyrics` in the deployed bot.
 
-Eighteen public-playlist checks cover metadata-only parsing, omitted previews/auth
+Thirty-six public-playlist checks cover metadata-only parsing, omitted previews/auth
 state, the visible-entry cap, malformed/login pages, playlist identity, API preference,
 private/unknown visibility, opt-out, source denial/rate limits, temporary caching,
-cancellation and personal-library warnings. An engine regression verifies the
+cancellation and personal-library warnings. Radio cases additionally check denied
+metadata, matching radio IDs/formats, explicit private/unknown visibility, snapshot
+notices, ordered bounded pages, opt-out, cancellation, rate/server/network failures,
+unavailable public metadata and the one-minute cache. An engine regression verifies the
 incomplete-source notice is delivered once without changing queue order. The
 production catalog path also imported 84 visible entries from public playlist
 `4i7Aahy42GS7ycM9nHO3pr` in pages of 5, 50 and 29, with one warning and an unknown
@@ -9372,6 +9428,14 @@ full total. That read-only probe used application credentials, did not refresh u
 credentials, did not request audio and did not connect Discord voice. It verifies
 the public metadata fallback, not completeness of the full playlist or availability
 of every mirrored song.
+
+The same production catalog path imported 50 public radio tracks from
+`37i9dQZF1E8LSWUaMsKuB7` after its API metadata returned HTTP 404. The unsigned embed
+returned HTTP 200, producing pages of 5 and 45 with one snapshot notice and an
+unknown full total. This probe used only application credentials for the API,
+did not refresh user credentials, request audio or connect Discord voice. It
+verifies this radio's public metadata snapshot; playback of its matched songs still
+requires the deployed bot's audio sources.
 
 An actual local Lavalink 4.2.2 with all four configured plugins passed initial event
 readiness, session initialization, authenticated WAV loading, a real process restart,
@@ -9581,6 +9645,14 @@ public embed metadata. This imports up to 100 visible entries and warns that the
 full playlist has not been verified. It can change or fail upstream and does not
 handle private playlists. Set this variable to `false` in **bot** Variables to use
 only the API. Spotify's [terms restrict unauthorized automated retrieval](https://developer.spotify.com/terms#section-iv-restrictions).
+
+Spotify-generated song radio can also import a public snapshot when the API denies
+the playlist metadata itself. The bot requires a recognized radio ID plus a matching
+unsigned public radio entity. Explicit private/unknown API visibility remains
+blocked. Radio imports show a notice: the visible list may differ from personalized
+Spotify radio and does not keep adding songs automatically. Snapshots are cached
+for one minute and remain capped at 100 visible entries. Deploy the updated **bot**
+service to enable this fix; no new variables or Lavalink changes are needed.
 
 ## Troubleshooting
 

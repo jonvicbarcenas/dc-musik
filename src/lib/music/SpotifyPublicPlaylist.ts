@@ -14,10 +14,16 @@ const entitySchema = z.object({
   uri: z.string(),
   title: z.string().trim().min(1).max(1000),
   trackList: z.array(z.unknown()).max(5000),
+  format: z.unknown().optional(),
 });
 export interface PublicPlaylist {
   name: string;
   tracks: RawTrack[];
+  spotifyRadio: boolean;
+}
+
+export function isSpotifyRadioId(id: string): boolean {
+  return /^37i9dQZF1E8[A-Za-z0-9]{11}$/.test(id);
 }
 
 /** Only the unsigned, publicly rendered widget. Ignore preview URLs and all auth state. */
@@ -47,7 +53,10 @@ export class SpotifyPublicPlaylist {
         const oldest = this.cache.keys().next().value;
         if (oldest) this.cache.delete(oldest);
       }
-      this.cache.set(id, { expiresAt: Date.now() + 15 * 60_000, value });
+      this.cache.set(id, {
+        expiresAt: Date.now() + (value.spotifyRadio ? 60_000 : 15 * 60_000),
+        value,
+      });
       return value;
     } catch {
       signal?.throwIfAborted();
@@ -98,5 +107,9 @@ export function parsePublicPlaylist(html: string, id: string): PublicPlaylist | 
       isPreview: false,
     });
   }
-  return { name: parsed.data.title.slice(0, 300), tracks };
+  return {
+    name: parsed.data.title.slice(0, 300),
+    tracks,
+    spotifyRadio: isSpotifyRadioId(id) && parsed.data.format === 'inspiredby-mix',
+  };
 }
