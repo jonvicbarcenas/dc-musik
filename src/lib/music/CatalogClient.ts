@@ -2,7 +2,7 @@ import type { Env } from '../../config/env.js';
 import { SafeHttpClient } from '../security/SafeHttpClient.js';
 import { AsyncLock } from '../utils/AsyncLock.js';
 import { MusicError } from '../utils/errors.js';
-import type { CatalogPage, RawTrack } from './types.js';
+import type { CatalogPage, RawTrack, ResolvedItem } from './types.js';
 import { toResolvedItem } from './TrackCodec.js';
 import { SpotifyUserAuth, spotifySignInRequired } from './SpotifyUserAuth.js';
 import { isSpotifyRadioId, SpotifyPublicPlaylist } from './SpotifyPublicPlaylist.js';
@@ -49,6 +49,31 @@ export class CatalogClient {
       url.hostname === 'deezer.com' ||
       (this.env.SPOTIFY_ENABLED && url.hostname === 'open.spotify.com')
     );
+  }
+
+  /** Search official Spotify metadata; playable audio is resolved separately by the music engine. */
+  async searchSpotify(input: string, count = 10, signal?: AbortSignal): Promise<ResolvedItem[]> {
+    signal?.throwIfAborted();
+    if (!this.env.SPOTIFY_ENABLED || !this.env.SPOTIFY_CLIENT_ID || !this.env.SPOTIFY_CLIENT_SECRET)
+      throw new MusicError(
+        'SPOTIFY_AUTH_REQUIRED',
+        'Spotify search has not been enabled by the bot owner. Choose another source or ask them to configure Spotify search.',
+      );
+    const query = input.trim();
+    if (!query || query.length > 4096 || !Number.isFinite(count))
+      throw new MusicError('INVALID_INPUT', 'Provide a song title or artist to search Spotify.');
+    const url = new URL('https://api.spotify.com/v1/search');
+    url.search = new URLSearchParams({
+      q: query,
+      type: 'track',
+      limit: String(Math.max(1, Math.min(10, Math.floor(count)))),
+      market: this.env.SOURCE_COUNTRY_CODE,
+    }).toString();
+    const response = object(await this.spotifyRequest(url.href, signal));
+    signal?.throwIfAborted();
+    return array(object(response['tracks'])['items'])
+      .slice(0, Math.max(1, Math.min(10, Math.floor(count))))
+      .flatMap((track) => this.spotifyItem(track));
   }
 
   async *pages(url: URL, limit: number, signal?: AbortSignal): AsyncGenerator<CatalogPage> {
@@ -325,6 +350,16 @@ export class CatalogClient {
         'Spotify cannot read this playlist. Use a public playlist owned by the authorized account, or one it collaborates on. Ask the bot owner to check Spotify app access.',
       );
     }
+    if (url.includes('/search?') && [401, 403].includes(response.status))
+      throw new MusicError(
+        'SPOTIFY_ACCESS_DENIED',
+        'Spotify denied search access. Ask the bot owner to check the Spotify application credentials and access, or choose another source.',
+      );
+    if (url.includes('/search?') && response.status === 429)
+      throw new MusicError(
+        'UNAVAILABLE',
+        'Spotify search is rate limited. Wait a little before searching again.',
+      );
     if (response.status !== 200)
       throw new MusicError('UNAVAILABLE', 'Spotify metadata access is restricted or unavailable.');
     try {

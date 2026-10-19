@@ -8,6 +8,7 @@ import type { PlaylistDetail, StoredTrack } from '../src/lib/db/models.js';
 import { parseEnv } from '../src/config/env.js';
 import { liveFixture, target } from './fixtures/live.js';
 import type { LiveView } from '../src/lib/web/LiveQueue.js';
+import { MusicError } from '../src/lib/utils/errors.js';
 
 const owner = '123456789012345678';
 const other = '223456789012345678';
@@ -305,6 +306,76 @@ describe('playlist dashboard', () => {
         })
       ).status,
     ).toBe(400);
+  });
+  it('accepts all four search providers and rejects arbitrary source prefixes', async () => {
+    const headers = await signIn();
+    for (const source of ['ytsearch', 'ytmsearch', 'scsearch', 'spsearch']) {
+      expect(
+        (await fetch(`${origin}/api/search?q=Hale&source=${source}`, { headers })).status,
+      ).toBe(200);
+      expect(search).toHaveBeenLastCalledWith(
+        `${source}:Hale`,
+        10,
+        undefined,
+        expect.any(AbortSignal),
+      );
+    }
+    const count = search.mock.calls.length;
+    expect((await fetch(`${origin}/api/search?q=Hale&source=http`, { headers })).status).toBe(400);
+    expect(search.mock.calls.length).toBe(count);
+  });
+  it('keeps Spotify search metadata when adding to saved playlists and the live queue', async () => {
+    const headers = await signIn();
+    const spotify = {
+      ...track,
+      key: 'spotify:catalog-result',
+      source: 'spotify' as const,
+      identifier: '4PTG3Z6ehGkBFwjybzWkR8',
+      uri: 'https://open.spotify.com/track/4PTG3Z6ehGkBFwjybzWkR8',
+    };
+    search.mockResolvedValueOnce([{ track: spotify, playable: null }]);
+    const data = await json<{ results: { id: string; track: StoredTrack }[] }>(
+      await fetch(`${origin}/api/search?q=Hale&source=spsearch`, { headers }),
+    );
+    const resultId = data.results[0]?.id;
+    expect(data.results[0]?.track.source).toBe('spotify');
+    const playlist = await repositories.playlists.create(owner, 'Spotify favorites');
+    expect(
+      (
+        await fetch(`${origin}/api/playlists/${playlist.id}/tracks`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ resultId }),
+        })
+      ).status,
+    ).toBe(200);
+    expect((await repositories.playlists.tracksOwned(owner, playlist.id))[0]?.source).toBe(
+      'spotify',
+    );
+    expect(
+      (
+        await fetch(`${origin}/api/live/${target}/tracks`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ resultId }),
+        })
+      ).status,
+    ).toBe(200);
+    expect((await fixture.live.view(owner, target)).upcoming.at(-1)?.track.source).toBe('spotify');
+  });
+  it('shows an explicit Spotify configuration error', async () => {
+    const headers = await signIn();
+    search.mockRejectedValueOnce(
+      new MusicError(
+        'SPOTIFY_AUTH_REQUIRED',
+        'Spotify search has not been enabled by the bot owner.',
+      ),
+    );
+    const response = await fetch(`${origin}/api/search?q=Hale&source=spsearch`, { headers });
+    expect(response.status).toBe(400);
+    expect(await json(response)).toEqual({
+      error: 'Spotify search has not been enabled by the bot owner.',
+    });
   });
   it('reorders duplicate songs by entry ID and preserves entry identities', async () => {
     const playlist = await repositories.playlists.create(owner, 'Mix');

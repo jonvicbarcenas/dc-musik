@@ -12,6 +12,7 @@ const state = {
   results: [],
   searching: false,
   searchMessage: '',
+  searchFailed: false,
   searchQuery: '',
   source: 'ytsearch',
   request: 0,
@@ -127,7 +128,19 @@ function playlistPage() {
     <div class="secondary-actions">${live ? '<button class="text-btn" data-action="live-undo">Undo queue edit</button><button class="text-btn" data-action="save-queue">Save as playlist</button><button class="text-btn" data-action="clear-queue">Clear upcoming songs</button>' : '<button class="text-btn" data-action="rename">Rename playlist</button>'}<button class="text-btn" data-action="dedupe">Remove duplicates</button><button class="text-btn" data-action="export">Export JSON</button>${!live ? '<button class="text-btn" data-action="delete">Delete playlist</button>' : ''}</div>
     </section>
     <aside class="search-panel" aria-labelledby="search-title"><div class="eyebrow">Keep the good songs coming</div><h2 id="search-title">Find your next favorite</h2><p>Search a title or artist. Add it to your mix.</p>
-      <form id="search-form"><label class="search-field">${icon('search')}<span class="sr-only">Search music</span><input id="search" type="search" placeholder="A song, an artist, a feeling…" value="${esc(state.searchQuery)}" maxlength="300" required/><button aria-label="Search">${icon('arrow')}</button></label><div class="source-row"><label for="source">Search on</label><select id="source"><option value="ytsearch" ${state.source === 'ytsearch' ? 'selected' : ''}>YouTube</option><option value="scsearch" ${state.source === 'scsearch' ? 'selected' : ''}>SoundCloud</option></select><span><span class="kbd">Ctrl</span> <span class="kbd">K</span></span></div></form>
+      <form id="search-form"><label class="search-field">${icon('search')}<span class="sr-only">Search music</span><input id="search" type="search" placeholder="A song, an artist, a feeling…" value="${esc(state.searchQuery)}" maxlength="300" required/><button aria-label="Search">${icon('arrow')}</button></label><div class="source-row"><label for="source">Search on</label><select id="source">${[
+        { id: 'spsearch', name: 'Spotify' },
+        { id: 'ytmsearch', name: 'YouTube Music' },
+        { id: 'ytsearch', name: 'YouTube' },
+        { id: 'scsearch', name: 'SoundCloud' },
+      ]
+        .map(
+          (source) =>
+            `<option value="${source.id}" ${state.source === source.id ? 'selected' : ''}>${source.name}</option>`,
+        )
+        .join(
+          '',
+        )}</select><span><span class="kbd">Ctrl</span> <span class="kbd">K</span></span></div></form>
       <div id="results" aria-live="polite"></div><button class="import-callout" data-action="import">${icon('import')}<span><strong>Already have a playlist?</strong><small>Bring a Spotify, YouTube or SoundCloud link.</small></span></button>
     </aside></div>`;
 }
@@ -162,7 +175,7 @@ function renderResults() {
   }
   target.innerHTML = state.results.length
     ? `<p class="search-status">${plural(state.results.length, 'result')}</p>${state.results.map((result) => `<div class="search-result">${artwork(result.track)}<div class="track-info"><div class="track-title" title="${esc(result.track.title)}">${esc(result.track.title)}</div><div class="track-subtitle">${esc(result.track.artist)}</div></div><button class="icon-btn" data-add="${result.id}" aria-label="Add ${esc(result.track.title)} to playlist">${icon('plus')}</button></div>`).join('')}`
-    : `<div class="search-empty">${icon('search')}<strong>${esc(state.searchMessage || 'A whole world of music')}</strong><p>${state.searchMessage ? 'Try another title or artist.' : 'The soundtrack to your next session is one search away.'}</p></div>`;
+    : `<div class="search-empty">${icon('search')}<strong>${esc(state.searchMessage || 'A whole world of music')}</strong><p>${state.searchFailed ? 'You can choose another search source and try again.' : state.searchMessage ? 'Try another title or artist.' : 'The soundtrack to your next session is one search away.'}</p></div>`;
   syncBusy();
 }
 function syncBusy() {
@@ -632,7 +645,15 @@ document.addEventListener('change', (event) => {
     else state.selected.delete(event.target.dataset.select);
     renderTracks();
   }
-  if (event.target.id === 'source') state.source = event.target.value;
+  if (event.target.id === 'source') {
+    state.source = event.target.value;
+    state.results = [];
+    state.searchMessage = '';
+    state.searchFailed = false;
+    state.request++;
+    state.searching = false;
+    renderResults();
+  }
 });
 document.addEventListener('submit', (event) => {
   if (event.target.id === 'volume-form') {
@@ -651,6 +672,7 @@ document.addEventListener('submit', (event) => {
   const request = ++state.request;
   state.searching = true;
   state.searchMessage = '';
+  state.searchFailed = false;
   renderResults();
   void api(`/api/search?q=${encodeURIComponent(query)}&source=${state.source}`)
     .then((data) => {
@@ -659,11 +681,14 @@ document.addEventListener('submit', (event) => {
       if (!data.results.length) state.searchMessage = 'No songs found this time';
     })
     .catch((error) => {
+      if (request !== state.request) return;
       state.results = [];
       state.searchMessage = error.message;
+      state.searchFailed = true;
       notice(error.message, true);
     })
     .finally(() => {
+      if (request !== state.request) return;
       state.searching = false;
       renderResults();
     });

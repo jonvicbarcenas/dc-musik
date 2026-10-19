@@ -365,7 +365,7 @@ export class Dashboard {
       this.expensive(session);
       const query = z.string().trim().min(1).max(300).parse(url.searchParams.get('q'));
       const source = z
-        .enum(['ytsearch', 'scsearch'])
+        .enum(['ytsearch', 'ytmsearch', 'scsearch', 'spsearch'])
         .parse(url.searchParams.get('source') ?? 'ytsearch');
       const items = await this.work.run(
         () => this.resolver().search(`${source}:${query}`, 10, undefined, this.signal()),

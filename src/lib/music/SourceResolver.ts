@@ -31,7 +31,7 @@ const platforms = new Set([
 export class SourceResolver {
   private readonly work: Semaphore;
   constructor(
-    private readonly transport: AudioTransport,
+    private readonly transport: Pick<AudioTransport, 'load'>,
     private readonly cache: Cache,
     private readonly media: MediaBridge,
     private readonly catalog: CatalogClient,
@@ -128,6 +128,8 @@ export class SourceResolver {
     const query = this.sanitizeQuery(input);
     if (/^https?:\/\//i.test(query))
       throw new MusicError('INVALID_INPUT', 'Search with a title and artist. Use play for links.');
+    if (/^spsearch:/i.test(query))
+      return this.catalog.searchSpotify(query.slice('spsearch:'.length), count, signal);
     const result = await this.transport.load(
       /^[a-z]+search:/i.test(query) ? query : `ytsearch:${query}`,
       nodeId,

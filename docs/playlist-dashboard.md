@@ -22,7 +22,7 @@ Without `DISCORD_CLIENT_SECRET`, the home page displays setup guidance and priva
 - Add search results, public source links, or a saved personal playlist directly to the live Discord queue. Save the current song and upcoming queue as a new personal playlist.
 
 - Create, rename, and delete personal playlists.
-- Search YouTube or SoundCloud by song title or artist and add results.
+- Search Spotify, YouTube Music, YouTube, or SoundCloud by song title or artist and add results to a saved playlist or live queue.
 - Import public Spotify, YouTube, or SoundCloud links using the bot's existing source support and limits.
 - Drag a track's handle to reorder. Arrow buttons also work with a keyboard or on mobile.
 - Filter the playlist by title or artist. Select multiple songs to remove them together.
@@ -33,6 +33,14 @@ Without `DISCORD_CLIENT_SECRET`, the home page displays setup guidance and priva
 Edits save immediately. Refresh the playlist to load changes made elsewhere. If its tracklist changed since you opened it, a reorder or removal is rejected and the latest list is loaded, so a stale browser cannot remove newly added songs. The import operation appends tracks; importing a JSON export is not currently supported.
 
 Search and imports require a ready music bot and a working Lavalink node. Spotify import has the same authorization and availability requirements as the Discord commands. Search results expire after ten minutes; search again if adding an old result fails.
+
+## Spotify catalog search
+
+Choose **Spotify** in the search panel's **Search on** dropdown. The bot service must have `SPOTIFY_ENABLED=true`, `SPOTIFY_CLIENT_ID`, and `SPOTIFY_CLIENT_SECRET` configured from its Spotify developer application. These credentials are separate from Discord OAuth. Deploy variable changes on Railway before retrying. Existing Spotify credentials used for imports can be reused; search also supports the existing optional Spotify refresh-token authorization.
+
+Spotify search reads track metadata from the official Web API, up to ten results per search. Spotify results retain their Spotify identity, artwork, album, and duration when added. The existing engine finds a full-length audio match for Discord playback. Search does not use preview clips or need a Spotify source enabled on the Lavalink service. If Spotify configuration or API access is unavailable, the panel displays the error and lets you choose another search source.
+
+See Spotify's [search reference](https://developer.spotify.com/documentation/web-api/reference/search) for API access and current search limits.
 
 ## Runtime and access
 
