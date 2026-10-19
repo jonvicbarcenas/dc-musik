@@ -189,6 +189,102 @@ export class SqlitePlaylistsRepository implements PlaylistsRepository {
     );
   }
 
+  rename(ownerId: string, playlistId: string, name: string) {
+    return runRepository(() => {
+      const displayName = validateInput(playlistNameSchema, name);
+      const normalized = validateInput(playlistSchema.shape.nameKey, nameKey(displayName));
+      return this.db.transaction(
+        (tx) => {
+          const playlist = requireOwned(tx, ownerId, playlistId);
+          const duplicate = tx
+            .select()
+            .from(playlists)
+            .where(and(eq(playlists.ownerId, ownerId), eq(playlists.nameKey, normalized)))
+            .get();
+          if (duplicate && duplicate.id !== playlist.id)
+            throw new RepositoryError('CONFLICT', 'A playlist with that name already exists.');
+          const row = tx
+            .update(playlists)
+            .set({ name: displayName, nameKey: normalized, updatedAt: Date.now() })
+            .where(eq(playlists.id, playlist.id))
+            .returning()
+            .get();
+          return validateStored(playlistSchema, row);
+        },
+        { behavior: 'immediate' },
+      );
+    });
+  }
+
+  detailOwned(ownerId: string, playlistId: string) {
+    return runRepository(() =>
+      this.db.transaction((tx) => {
+        const playlist = requireOwned(tx, ownerId, playlistId);
+        const rows = tx
+          .select()
+          .from(playlistTracks)
+          .where(eq(playlistTracks.playlistId, playlist.id))
+          .orderBy(asc(playlistTracks.position))
+          .all();
+        if (rows.some((row, index) => row.position !== index))
+          throw new RepositoryError('CORRUPT_DATA', 'Playlist positions are inconsistent.');
+        return { playlist, tracks: rows.map(trackItem) };
+      }),
+    );
+  }
+
+  /** Entry IDs preserve duplicate songs; the expected sequence prevents edits to a stale list. */
+  updateTracks(
+    ownerId: string,
+    playlistId: string,
+    expectedIds: readonly string[],
+    orderedIds: readonly string[],
+  ) {
+    return runRepository(() => {
+      const ids = z.array(z.uuid()).max(10_000);
+      const expected = validateInput(ids, expectedIds);
+      const ordered = validateInput(ids, orderedIds);
+      if (new Set(ordered).size !== ordered.length)
+        throw new RepositoryError('INVALID_INPUT', 'A playlist entry cannot appear twice.');
+      return this.db.transaction(
+        (tx) => {
+          const playlist = requireOwned(tx, ownerId, playlistId);
+          const rows = tx
+            .select()
+            .from(playlistTracks)
+            .where(eq(playlistTracks.playlistId, playlist.id))
+            .orderBy(asc(playlistTracks.position))
+            .all();
+          if (
+            rows.length !== expected.length ||
+            rows.some((row, index) => row.id !== expected[index])
+          )
+            throw new RepositoryError(
+              'CONFLICT',
+              'This playlist changed elsewhere. Refresh it and try again.',
+            );
+          const byId = new Map(rows.map((row) => [row.id, row]));
+          const updated = ordered.map((id, position) => {
+            const row = byId.get(id);
+            if (!row)
+              throw new RepositoryError('INVALID_INPUT', 'That entry is not in this playlist.');
+            return { ...row, position };
+          });
+          tx.delete(playlistTracks).where(eq(playlistTracks.playlistId, playlist.id)).run();
+          for (let offset = 0; offset < updated.length; offset += 100)
+            tx.insert(playlistTracks)
+              .values(updated.slice(offset, offset + 100))
+              .run();
+          tx.update(playlists)
+            .set({ updatedAt: Date.now() })
+            .where(eq(playlists.id, playlist.id))
+            .run();
+        },
+        { behavior: 'immediate' },
+      );
+    });
+  }
+
   viewOwned(ownerId: string, playlistId: string, request: PageRequest = {}) {
     return runRepository(() =>
       this.db.transaction((tx) => view(tx, requireOwned(tx, ownerId, playlistId), request)),

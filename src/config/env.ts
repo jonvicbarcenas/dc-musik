@@ -145,6 +145,26 @@ const envSchema = z
     CONTROLLER_UPDATE_INTERVAL_MS: integer(10_000, 10_000, 60_000),
     IMPORT_CONCURRENCY: integer(3, 1, 8),
     HEALTH_PORT: integer(3000, 1, 65_535),
+    DISCORD_CLIENT_SECRET: optionalSecret,
+    DASHBOARD_URL: z.preprocess(
+      blankToUndefined,
+      z
+        .url()
+        .refine((value) => {
+          const url = new URL(value);
+          return (
+            !url.username &&
+            !url.password &&
+            !url.search &&
+            !url.hash &&
+            url.pathname === '/' &&
+            (url.protocol === 'https:' ||
+              (url.protocol === 'http:' &&
+                ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)))
+          );
+        }, 'Use an HTTPS origin, or HTTP on localhost, without a path.')
+        .default('http://localhost:3000'),
+    ),
     MEDIA_BRIDGE_PORT: integer(3001, 1, 65_535),
     MEDIA_CACHE_PATH: z.preprocess(
       blankToUndefined,

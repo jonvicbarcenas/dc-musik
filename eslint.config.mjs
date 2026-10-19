@@ -8,6 +8,8 @@ export default tseslint.config(
       'node_modules/**',
       'dist/**',
       'coverage/**',
+      'output/playwright/**',
+      '.playwright-cli/**',
       'data/**',
       'logs/**',
       'media-cache/**',
@@ -18,6 +20,11 @@ export default tseslint.config(
     files: ['**/*.mjs', '**/*.cjs'],
     ...js.configs.recommended,
     languageOptions: { globals: globals.node },
+  },
+  {
+    files: ['src/lib/web/dashboard/*.js'],
+    ...js.configs.recommended,
+    languageOptions: { globals: globals.browser },
   },
   {
     files: ['**/*.ts'],

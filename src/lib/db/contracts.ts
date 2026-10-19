@@ -13,6 +13,7 @@ import type {
   PageRequest,
   PersonalPlaylist,
   PlaylistView,
+  PlaylistDetail,
   QueueSnapshot,
   SnapshotRecord,
   SnapshotSummary,
@@ -37,6 +38,14 @@ export interface PlaylistsRepository {
   findOwned(ownerId: string, nameOrId: string): Promise<PersonalPlaylist | null>;
   list(ownerId: string, request?: PageRequest): Promise<Page<PersonalPlaylist>>;
   delete(ownerId: string, playlistId: string): Promise<void>;
+  rename(ownerId: string, playlistId: string, name: string): Promise<PersonalPlaylist>;
+  detailOwned(ownerId: string, playlistId: string): Promise<PlaylistDetail>;
+  updateTracks(
+    ownerId: string,
+    playlistId: string,
+    expectedIds: readonly string[],
+    orderedIds: readonly string[],
+  ): Promise<void>;
   viewOwned(ownerId: string, playlistId: string, request?: PageRequest): Promise<PlaylistView>;
   tracksOwned(ownerId: string, playlistId: string): Promise<StoredTrack[]>;
   append(ownerId: string, playlistId: string, tracks: readonly StoredTrack[]): Promise<number>;

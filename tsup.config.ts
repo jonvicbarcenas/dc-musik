@@ -32,5 +32,6 @@ export default defineConfig({
   onSuccess: () =>
     Promise.resolve().then(() => {
       cpSync('src/lib/db/migrations', 'dist/migrations', { recursive: true });
+      cpSync('src/lib/web/dashboard', 'dist/dashboard', { recursive: true });
     }),
 });

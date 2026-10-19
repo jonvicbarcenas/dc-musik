@@ -4,6 +4,7 @@ import { openDatabase, applyMigrations, createRepositories } from './lib/db/inde
 import { MemoryCache, RedisCache } from './lib/cache/Cache.js';
 import { MediaBridge } from './lib/security/MediaBridge.js';
 import { HealthServer } from './lib/runtime/HealthServer.js';
+import { Dashboard } from './lib/web/Dashboard.js';
 import { MultiBotCoordinator } from './lib/advanced/MultiBotCoordinator.js';
 import { createBot } from './bot.js';
 import type { BotRuntime } from './bot.js';
@@ -35,7 +36,11 @@ async function main(): Promise<void> {
     bots: bots.length,
     nodes: bots.reduce((sum, bot) => sum + bot.preparedNodes.size, 0),
   });
-  const health = new HealthServer(env.HEALTH_PORT, status);
+  let dashboard: Dashboard | null = null;
+  const health = new HealthServer(env.HEALTH_PORT, status, async (request, response) => {
+    if (dashboard) await dashboard.handle(request, response);
+    else response.writeHead(503).end('Dashboard is starting.');
+  });
   let reportTimer: ReturnType<typeof setInterval> | null = null;
   const close = (reason: string, failed = false): Promise<void> => {
     if (shutdown) return shutdown;
@@ -54,6 +59,8 @@ async function main(): Promise<void> {
           },
           () => undefined,
         );
+      await health.close();
+      await dashboard?.close();
       const results = await Promise.allSettled(bots.map((bot) => bot.close()));
       if (results.some((result) => result.status === 'rejected')) {
         process.exitCode = 1;
@@ -61,7 +68,6 @@ async function main(): Promise<void> {
           'A final queue checkpoint failed; the preceding durable snapshots are retained.',
         );
       }
-      await health.close();
       await media.close();
       await cache.close();
       connection.close();
@@ -123,6 +129,15 @@ async function main(): Promise<void> {
       },
       limits: { tracksPerPlaylist: env.MAX_PLAYLIST_IMPORT },
     });
+    if (!shardChild)
+      dashboard = new Dashboard({
+        clientId: env.DISCORD_CLIENT_ID,
+        clientSecret: env.DISCORD_CLIENT_SECRET,
+        url: env.DASHBOARD_URL,
+        repositories,
+        resolver: () => bots.find((bot) => bot.ready())?.services.players.resolver,
+        importLimit: env.MAX_PLAYLIST_IMPORT,
+      });
     const shared = {
       env,
       repositories,

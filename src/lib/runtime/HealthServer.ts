@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import type { Server } from 'node:http';
+import type { Server, IncomingMessage, ServerResponse } from 'node:http';
 
 export interface HealthStatus {
   ready: boolean;
@@ -12,10 +12,21 @@ export class HealthServer {
   constructor(
     private readonly port: number,
     private readonly status: () => HealthStatus,
+    private readonly page?: (request: IncomingMessage, response: ServerResponse) => Promise<void>,
   ) {}
   async start(): Promise<void> {
     const server = createServer((request, response) => {
       if (request.method !== 'GET' || !['/health', '/live'].includes(request.url ?? '')) {
+        if (this.page) {
+          void this.page(request, response).catch(() => {
+            if (!response.headersSent)
+              response.writeHead(500, { 'Content-Type': 'application/json' });
+            response.end(
+              JSON.stringify({ error: 'The dashboard request could not be completed.' }),
+            );
+          });
+          return;
+        }
         response.writeHead(404).end();
         return;
       }

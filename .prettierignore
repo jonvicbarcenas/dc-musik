@@ -11,3 +11,5 @@ src/lib/db/migrations/meta/
 docs/phase-*-files.md
 .env
 .env.*
+output/playwright/
+.playwright-cli/

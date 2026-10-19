@@ -274,6 +274,10 @@ export interface PlaylistView {
   playlist: PersonalPlaylist;
   tracks: Page<PlaylistTrack>;
 }
+export interface PlaylistDetail {
+  playlist: PersonalPlaylist;
+  tracks: PlaylistTrack[];
+}
 export interface SnapshotVersion {
   generation: string;
   revision: number;
